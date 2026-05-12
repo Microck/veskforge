@@ -35,7 +35,14 @@ Vencord custom plugins are compile-time plugins. Vesktop loads a built Vencord d
 
 ## quickstart
 
-for normal use, install a release build once release artifacts are published. until then, build from source:
+for normal use, install the latest build from [releases](https://github.com/Microck/veskforge/releases):
+
+| platform | artifact |
+| --- | --- |
+| windows | `veskforge_*_x64-setup.exe` |
+| linux | `.deb`, `.rpm`, or `.AppImage` |
+
+to run from source:
 
 ```bash
 pnpm install --trust-policy-exclude semver@6.3.1
@@ -139,7 +146,7 @@ build all configured linux bundles:
 pnpm tauri build
 ```
 
-windows `.exe` installers are built by GitHub Actions on `windows-latest` using the same `pnpm tauri build` command. CI uploads the NSIS installer from `src-tauri/target/release/bundle/nsis/*.exe`, and tagged releases attach that installer to a draft GitHub release.
+windows `.exe` installers are built by GitHub Actions on `windows-latest` using the same `pnpm tauri build` command. CI uploads the NSIS installer from `src-tauri/target/release/bundle/nsis/*.exe`, and tagged releases attach that installer to the GitHub release.
 
 ## verification
 
