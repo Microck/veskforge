@@ -53,6 +53,13 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build release bundles
+        if: runner.os == 'Windows'
+        run: pnpm tauri build
+
+      - name: Build release bundles
+        if: runner.os == 'Linux'
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
         run: pnpm tauri build
 
       - name: Prepare Windows portable executable
