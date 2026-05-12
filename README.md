@@ -14,6 +14,10 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-mit-000000?style=flat-square" alt="license badge"></a>
 </p>
 
+<p align="center">
+<img width="auto" height="480" alt="veskforge-showcase" src="https://github.com/user-attachments/assets/5eea0a7a-0f1a-4e02-8d43-c4d1f64d67d7" />
+</p>
+
 ---
 
 `veskforge` is an unofficial desktop build manager for Vesktop users who want custom Vencord plugins without hand-running the source workflow every time. it manages a Vencord checkout, installs enabled plugins into `src/userplugins`, builds Vencord, validates the desktop `dist`, and points Vesktop at that build through Vesktop's supported `vencordDir` state setting.
