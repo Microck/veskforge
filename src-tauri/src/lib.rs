@@ -304,6 +304,80 @@ fn tool_status(name: &str, version_args: &[&str]) -> ToolStatus {
     }
 }
 
+#[tauri::command]
+fn install_toolchain(app: AppHandle) -> Result<CommandResult, String> {
+    let mut log = String::new();
+    let git = tool_status("git", &["--version"]);
+    let node = tool_status("node", &["--version"]);
+    let pnpm = tool_status("pnpm", &["--version"]);
+
+    if git.available && node.available && pnpm.available {
+        return Ok(CommandResult {
+            ok: true,
+            message: "Required build tools are already installed.".to_string(),
+            log: format!(
+                "git: {}\nnode: {}\npnpm: {}",
+                git.version.unwrap_or_else(|| "available".to_string()),
+                node.version.unwrap_or_else(|| "available".to_string()),
+                pnpm.version.unwrap_or_else(|| "available".to_string()),
+            ),
+        });
+    }
+
+    if !git.available || !node.available {
+        let missing = [("git", git.available), ("node", node.available)]
+            .into_iter()
+            .filter_map(|(name, available)| (!available).then_some(name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "Missing {missing}. Install Git and Node.js first, then run this installer again. veskforge can install pnpm once Node.js is available."
+        ));
+    }
+
+    log.push_str("Installing pnpm...\n");
+    match run_command("corepack", &["enable", "pnpm"], None) {
+        Ok(output) => {
+            log.push_str("corepack enable pnpm\n");
+            log.push_str(&output);
+            match run_command("corepack", &["prepare", "pnpm@latest", "--activate"], None) {
+                Ok(output) => {
+                    log.push_str("corepack prepare pnpm@latest --activate\n");
+                    log.push_str(&output);
+                }
+                Err(err) => {
+                    log.push_str(&format!("Corepack prepare failed, trying npm fallback.\n{err}\n"));
+                    log.push_str(&run_command("npm", &["install", "-g", "pnpm"], None)?);
+                }
+            }
+        }
+        Err(err) => {
+            log.push_str(&format!("Corepack unavailable, trying npm fallback.\n{err}\n"));
+            log.push_str(&run_command("npm", &["install", "-g", "pnpm"], None)?);
+        }
+    }
+
+    let pnpm = tool_status("pnpm", &["--version"]);
+    if !pnpm.available {
+        return Err(format!("pnpm installation finished, but pnpm is still not available on PATH.\n{log}"));
+    }
+
+    let manifest = read_manifest(&app)?;
+    let mut result = CommandResult {
+        ok: true,
+        message: "pnpm installed and build toolchain is ready.".to_string(),
+        log: format!(
+            "{log}\npnpm: {}\nWorkspace: {}",
+            pnpm.version.unwrap_or_else(|| "available".to_string()),
+            workspace_dir(&app)?.display(),
+        ),
+    };
+    if manifest.plugins.is_empty() {
+        result.log.push_str("\nNo plugin sources are configured yet.");
+    }
+    Ok(result)
+}
+
 fn git_revision(path: &Path) -> Option<String> {
     run_command("git", &["rev-parse", "--short", "HEAD"], Some(path))
         .ok()
@@ -602,6 +676,7 @@ pub fn run() {
             remove_plugin,
             set_plugin_enabled,
             set_update_policy,
+            install_toolchain,
             check_updates,
             build_vencord,
             apply_to_vesktop

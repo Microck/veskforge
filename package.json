@@ -1,7 +1,7 @@
 {
   "name": "veskforge",
   "private": true,
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Unofficial custom Vencord build manager for Vesktop.",
   "license": "MIT",
   "type": "module",

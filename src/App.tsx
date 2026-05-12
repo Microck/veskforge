@@ -1,18 +1,18 @@
 import {
   ArrowClockwise,
   Check,
+  Coffee,
   Copy,
   Desktop,
   DotsThreeVertical,
   Folder,
   GitBranch,
+  GithubLogo,
   Hammer,
-  Info,
   MagnifyingGlass,
   Package,
   Play,
   Plus,
-  Question,
   ShieldCheck,
   Sparkle,
   TerminalWindow,
@@ -20,6 +20,7 @@ import {
   UploadSimple,
 } from "@phosphor-icons/react";
 import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import type { Icon } from "@phosphor-icons/react";
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
@@ -92,6 +93,9 @@ const views = [
   { id: "vesktop", label: "Vesktop", icon: Desktop },
 ] satisfies { id: View; label: string; icon: Icon }[];
 
+const repositoryUrl = "https://github.com/Microck/veskforge";
+const kofiUrl = "https://ko-fi.com/microck";
+
 function sourceSummary(source: PluginSource) {
   if (source.kind === "git") return `${source.url}${source.reference ? ` @ ${source.reference}` : ""}`;
   return source.path;
@@ -115,6 +119,14 @@ function errorMessage(error: unknown) {
     return "Tauri backend unavailable in browser preview. Launch with `pnpm tauri dev` for live system commands.";
   }
   return message;
+}
+
+async function openExternal(url: string) {
+  try {
+    await openUrl(url);
+  } catch {
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
 }
 
 function App() {
@@ -246,11 +258,11 @@ function App() {
           </nav>
 
           <div className="sidebar-footer">
-            <button aria-label="Settings">
-              <Package size={25} />
+            <button aria-label="Open GitHub repository" onClick={() => openExternal(repositoryUrl)} title="GitHub">
+              <GithubLogo size={25} />
             </button>
-            <button aria-label="Help">
-              <Question size={25} />
+            <button aria-label="Open Ko-fi" onClick={() => openExternal(kofiUrl)} title="Ko-fi">
+              <Coffee size={25} />
             </button>
           </div>
         </aside>
@@ -287,7 +299,9 @@ function App() {
                         <div className="source-icon">{sourceIcons[plugin.source.kind]}</div>
                         <strong>{plugin.name}</strong>
                         <span>{sourceLabels[plugin.source.kind]}</span>
-                        <span className="path-text">{sourceSummary(plugin.source)}</span>
+                        <span className="path-text" title={sourceSummary(plugin.source)}>
+                          {sourceSummary(plugin.source)}
+                        </span>
                         <Switch
                           checked={plugin.enabled}
                           disabled={!!busy}
@@ -331,7 +345,7 @@ function App() {
                 addPlugin={addPlugin}
               />
 
-              <FooterNote icon={<Info size={23} />}>Plugin sources are application code. Only add sources you trust.</FooterNote>
+              <FooterNote icon={<ShieldCheck size={23} />}>Plugin sources are application code. Only add sources you trust.</FooterNote>
             </section>
           )}
 
@@ -348,7 +362,7 @@ function App() {
                 </div>
                 <div>
                   <TerminalWindow size={23} />
-                  <span>{missingTools.length ? `Missing ${missingTools.join(", ")}` : "pnpm toolchain"}</span>
+                  <span>{missingTools.length ? `Missing ${missingTools.join(", ")}` : "Build toolchain"}</span>
                 </div>
                 <div>
                   <ArrowClockwise size={23} />
@@ -365,6 +379,12 @@ function App() {
                   <ArrowClockwise size={25} />
                   Check updates
                 </button>
+                {missingTools.length > 0 && (
+                  <button className="secondary install-tools" disabled={!!busy} onClick={() => runAction("Installing tools", () => invoke("install_toolchain"))}>
+                    <TerminalWindow size={22} />
+                    Install missing tools
+                  </button>
+                )}
                 <StatusPill ok={missingTools.length === 0}>{missingTools.length ? "Toolchain incomplete" : "Ready to build"}</StatusPill>
               </div>
 
@@ -486,7 +506,6 @@ function App() {
 function ViewHeader({ title, subtitle }: { title: string; subtitle: string }) {
   return (
     <header className="view-header">
-      <p>Vencord build forge</p>
       <h1>{title}</h1>
       <span>{subtitle}</span>
     </header>
