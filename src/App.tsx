@@ -9,7 +9,6 @@ import {
   Hammer,
   Info,
   MagnifyingGlass,
-  Minus,
   Package,
   Play,
   Plus,
@@ -19,15 +18,12 @@ import {
   TerminalWindow,
   Trash,
   UploadSimple,
-  X,
 } from "@phosphor-icons/react";
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Icon } from "@phosphor-icons/react";
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import "./App.css";
-import logoDark from "./assets/veskforge-logo-dark.svg";
 
 type PluginSource =
   | { kind: "localFile"; path: string }
@@ -119,15 +115,6 @@ function errorMessage(error: unknown) {
     return "Tauri backend unavailable in browser preview. Launch with `pnpm tauri dev` for live system commands.";
   }
   return message;
-}
-
-async function windowAction(action: "minimize" | "toggleMaximize" | "close") {
-  try {
-    const appWindow = getCurrentWindow();
-    await appWindow[action]();
-  } catch {
-    // Browser preview has no Tauri window. The control still belongs in the desktop shell.
-  }
 }
 
 function App() {
@@ -240,27 +227,6 @@ function App() {
 
   return (
     <main className="app-shell">
-      <header className="titlebar" data-tauri-drag-region>
-        <div className="window-brand" data-tauri-drag-region>
-          <picture className="window-logo">
-            <source srcSet={logoDark} media="(prefers-color-scheme: dark)" />
-            <img src={logoDark} alt="" />
-          </picture>
-          <span>veskforge</span>
-        </div>
-        <div className="window-controls">
-          <button aria-label="Minimize" onClick={() => windowAction("minimize")}>
-            <Minus size={20} />
-          </button>
-          <button aria-label="Maximize" onClick={() => windowAction("toggleMaximize")}>
-            <span className="maximize-icon" />
-          </button>
-          <button aria-label="Close" onClick={() => windowAction("close")}>
-            <X size={24} />
-          </button>
-        </div>
-      </header>
-
       <div className="desktop-frame">
         <aside className="sidebar">
           <nav aria-label="Primary">
