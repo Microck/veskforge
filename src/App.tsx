@@ -1,8 +1,33 @@
+import {
+  ArrowClockwise,
+  Check,
+  Copy,
+  Desktop,
+  DotsThreeVertical,
+  Folder,
+  GitBranch,
+  Hammer,
+  Info,
+  MagnifyingGlass,
+  Minus,
+  Package,
+  Play,
+  Plus,
+  Question,
+  ShieldCheck,
+  Sparkle,
+  TerminalWindow,
+  Trash,
+  UploadSimple,
+  X,
+} from "@phosphor-icons/react";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import type { Icon } from "@phosphor-icons/react";
+import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import "./App.css";
 import logoDark from "./assets/veskforge-logo-dark.svg";
-import logoLight from "./assets/veskforge-logo-light.svg";
 
 type PluginSource =
   | { kind: "localFile"; path: string }
@@ -51,15 +76,41 @@ type CommandResult = {
   log: string;
 };
 
+type View = "sources" | "build" | "vesktop";
+
 const sourceLabels: Record<PluginSource["kind"], string> = {
-  localFile: "Local file",
+  localFile: ".ts file",
   localFolder: "Local folder",
-  git: "Git",
+  git: "Git repository",
 };
+
+const sourceIcons = {
+  localFile: <span className="file-badge">TS</span>,
+  localFolder: <Folder size={23} weight="regular" />,
+  git: <GitBranch size={23} weight="regular" />,
+} satisfies Record<PluginSource["kind"], ReactNode>;
+
+const views = [
+  { id: "sources", label: "Sources", icon: Folder },
+  { id: "build", label: "Build", icon: Hammer },
+  { id: "vesktop", label: "Vesktop", icon: Desktop },
+] satisfies { id: View; label: string; icon: Icon }[];
 
 function sourceSummary(source: PluginSource) {
   if (source.kind === "git") return `${source.url}${source.reference ? ` @ ${source.reference}` : ""}`;
   return source.path;
+}
+
+function formatDate(value?: string) {
+  if (!value) return "Never";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
 }
 
 function errorMessage(error: unknown) {
@@ -70,8 +121,18 @@ function errorMessage(error: unknown) {
   return message;
 }
 
+async function windowAction(action: "minimize" | "toggleMaximize" | "close") {
+  try {
+    const appWindow = getCurrentWindow();
+    await appWindow[action]();
+  } catch {
+    // Browser preview has no Tauri window. The control still belongs in the desktop shell.
+  }
+}
+
 function App() {
   const [status, setStatus] = useState<EnvironmentStatus | null>(null);
+  const [activeView, setActiveView] = useState<View>("sources");
   const [busy, setBusy] = useState<string | null>(null);
   const [log, setLog] = useState("Ready.");
   const [pluginKind, setPluginKind] = useState<PluginSource["kind"]>("localFolder");
@@ -79,13 +140,26 @@ function App() {
   const [pluginName, setPluginName] = useState("");
   const [gitRef, setGitRef] = useState("");
   const [vesktopStatePath, setVesktopStatePath] = useState("");
+  const [search, setSearch] = useState("");
+  const [showComposer, setShowComposer] = useState(false);
 
   const manifest = status?.manifest;
-  const enabledCount = manifest?.plugins.filter((plugin) => plugin.enabled).length ?? 0;
+  const plugins = manifest?.plugins ?? [];
+  const filteredPlugins = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    if (!query) return plugins;
+    return plugins.filter((plugin) => {
+      const source = sourceSummary(plugin.source).toLowerCase();
+      return plugin.name.toLowerCase().includes(query) || source.includes(query) || sourceLabels[plugin.source.kind].toLowerCase().includes(query);
+    });
+  }, [plugins, search]);
+  const enabledCount = plugins.filter((plugin) => plugin.enabled).length;
   const missingTools = useMemo(
     () => status?.tools.filter((tool) => !tool.available).map((tool) => tool.name) ?? [],
     [status],
   );
+  const canBuild = !busy && missingTools.length === 0;
+  const detectedInstall = Boolean(vesktopStatePath || status?.selectedVesktopState);
 
   async function refresh() {
     const nextStatus = await invoke<EnvironmentStatus>("get_environment_status");
@@ -126,7 +200,7 @@ function App() {
           ? { kind: "localFile", path: trimmedSource }
           : { kind: "localFolder", path: trimmedSource };
 
-    await runAction("Adding plugin", async () =>
+    await runAction("Adding source", async () =>
       invoke<Manifest>("add_plugin", {
         request: {
           source,
@@ -137,6 +211,7 @@ function App() {
     setPluginName("");
     setPluginPath("");
     setGitRef("");
+    setShowComposer(false);
   }
 
   async function autodetectVesktopState() {
@@ -164,213 +239,263 @@ function App() {
   }, []);
 
   return (
-    <main className="shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <picture className="brand-mark">
-            <source srcSet={logoLight} media="(prefers-color-scheme: light)" />
+    <main className="app-shell">
+      <header className="titlebar" data-tauri-drag-region>
+        <div className="window-brand" data-tauri-drag-region>
+          <picture className="window-logo">
+            <source srcSet={logoDark} media="(prefers-color-scheme: dark)" />
             <img src={logoDark} alt="" />
           </picture>
-          <div>
-            <h1>veskforge</h1>
-            <p>Custom Vencord builds for Vesktop</p>
-          </div>
+          <span>veskforge</span>
         </div>
-
-        <nav aria-label="Primary">
-          <a href="#plugins">Sources</a>
-          <a href="#build">Build</a>
-          <a href="#settings">Vesktop</a>
-        </nav>
-
-        <div className="trust-note">
-          <span>Custom plugins execute inside Vencord. Treat every source like application code.</span>
-        </div>
-      </aside>
-
-      <section className="content">
-        <header className="topbar" id="dashboard">
-          <div>
-            <p className="eyebrow">Vencord build forge</p>
-            <h2>Custom plugins, one managed Vesktop target.</h2>
-          </div>
-          <button className="secondary" disabled={!!busy} onClick={refresh}>
-            Refresh
+        <div className="window-controls">
+          <button aria-label="Minimize" onClick={() => windowAction("minimize")}>
+            <Minus size={20} />
           </button>
-        </header>
+          <button aria-label="Maximize" onClick={() => windowAction("toggleMaximize")}>
+            <span className="maximize-icon" />
+          </button>
+          <button aria-label="Close" onClick={() => windowAction("close")}>
+            <X size={24} />
+          </button>
+        </div>
+      </header>
 
-        <section className="status-grid">
-          <article>
-            <span className="metric">{manifest?.plugins.length ?? 0}</span>
-            <p>Managed plugins</p>
-          </article>
-          <article>
-            <span className="metric">{enabledCount}</span>
-            <p>Enabled for next build</p>
-          </article>
-          <article>
-            <span className={missingTools.length ? "pill danger" : "pill ok"}>
-              {missingTools.length ? missingTools.join(", ") : "Ready"}
-            </span>
-            <p>Toolchain</p>
-          </article>
-          <article>
-            <span className="metric small">{manifest?.updatePolicy.mode ?? "manual"}</span>
-            <p>Update policy</p>
-          </article>
-        </section>
+      <div className="desktop-frame">
+        <aside className="sidebar">
+          <nav aria-label="Primary">
+            {views.map((view) => {
+              const Icon = view.icon;
+              return (
+                <button
+                  className={activeView === view.id ? "nav-item active" : "nav-item"}
+                  key={view.id}
+                  onClick={() => setActiveView(view.id)}
+                >
+                  <Icon size={27} weight="regular" />
+                  <span>{view.label}</span>
+                </button>
+              );
+            })}
+          </nav>
 
-        <section className="workspace">
-          <section className="panel source-panel" id="plugins">
-            <div className="panel-header">
-              <div>
-                <p className="eyebrow">Plugin sources</p>
-                <h3>Add custom plugin</h3>
-              </div>
-            </div>
-            <div className="form-grid">
-              <label>
-                Source type
-                <select value={pluginKind} onChange={(event) => setPluginKind(event.currentTarget.value as PluginSource["kind"])}>
-                  <option value="localFolder">Local folder</option>
-                  <option value="localFile">Local file</option>
-                  <option value="git">Git URL</option>
-                </select>
-              </label>
-              <label className="wide">
-                {pluginKind === "git" ? "Git URL" : "Path"}
-                <input
-                  value={pluginPath}
-                  onChange={(event) => setPluginPath(event.currentTarget.value)}
-                  placeholder={pluginKind === "git" ? "https://github.com/user/vencord-plugin.git" : "/path/to/plugin"}
-                />
-              </label>
-              <label>
-                Display name
-                <input value={pluginName} onChange={(event) => setPluginName(event.currentTarget.value)} placeholder="Optional" />
-              </label>
-              {pluginKind === "git" && (
-                <label>
-                  Ref
-                  <input value={gitRef} onChange={(event) => setGitRef(event.currentTarget.value)} placeholder="branch, tag, or commit" />
+          <div className="sidebar-footer">
+            <button aria-label="Settings">
+              <Package size={25} />
+            </button>
+            <button aria-label="Help">
+              <Question size={25} />
+            </button>
+          </div>
+        </aside>
+
+        <section className="workspace" aria-live="polite">
+          {activeView === "sources" && (
+            <section className="view sources-view">
+              <ViewHeader title="Plugin sources" subtitle="Manage custom plugin inputs for your next build." />
+
+              <div className="source-toolbar">
+                <label className="search-field">
+                  <MagnifyingGlass size={24} />
+                  <input value={search} onChange={(event) => setSearch(event.currentTarget.value)} placeholder="Search sources..." />
                 </label>
-              )}
-              <button disabled={!!busy} onClick={addPlugin}>
-                Add plugin
-              </button>
-            </div>
+                <button className="primary add-source" disabled={!!busy} onClick={() => setShowComposer((current) => !current)}>
+                  <Plus size={24} />
+                  Add source
+                </button>
+              </div>
 
-            <div className="plugin-list" aria-label="Managed plugins">
-              {manifest?.plugins.length ? (
-                manifest.plugins.map((plugin) => (
-                  <article className="plugin-card" key={plugin.id}>
-                    <div>
-                      <div className="plugin-title">
-                        <h4>{plugin.name}</h4>
+              <div className="source-table">
+                <div className="source-head">
+                  <span />
+                  <span>Name</span>
+                  <span>Type</span>
+                  <span>Path</span>
+                  <span>Enabled</span>
+                  <span />
+                </div>
+                <div className="source-body">
+                  {filteredPlugins.length ? (
+                    filteredPlugins.map((plugin) => (
+                      <article className="source-row" key={plugin.id}>
+                        <div className="source-icon">{sourceIcons[plugin.source.kind]}</div>
+                        <strong>{plugin.name}</strong>
                         <span>{sourceLabels[plugin.source.kind]}</span>
-                      </div>
-                      <p>{sourceSummary(plugin.source)}</p>
-                      {plugin.lastRevision && <small>Last revision {plugin.lastRevision}</small>}
-                    </div>
-                    <div className="plugin-actions">
-                      <label className="switch">
-                        <input
-                          type="checkbox"
+                        <span className="path-text">{sourceSummary(plugin.source)}</span>
+                        <Switch
                           checked={plugin.enabled}
                           disabled={!!busy}
-                          onChange={(event) =>
-                            runAction("Updating plugin", async () =>
+                          label={`${plugin.enabled ? "Disable" : "Enable"} ${plugin.name}`}
+                          onChange={(enabled) =>
+                            runAction("Updating source", async () =>
                               invoke<Manifest>("set_plugin_enabled", {
                                 pluginId: plugin.id,
-                                enabled: event.currentTarget.checked,
+                                enabled,
                               }),
                             )
                           }
                         />
-                        <span>{plugin.enabled ? "Enabled" : "Disabled"}</span>
-                      </label>
-                      <button
-                        className="danger"
-                        disabled={!!busy}
-                        onClick={() => runAction("Removing plugin", async () => invoke<Manifest>("remove_plugin", { pluginId: plugin.id }))}
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  </article>
-                ))
-              ) : (
-                <div className="empty">Drop in a local plugin folder, single `.ts` file, or Git source.</div>
-              )}
-            </div>
-          </section>
-
-          <section className="side-stack">
-            <section className="panel" id="build">
-              <div className="panel-header">
-                <div>
-                  <p className="eyebrow">Build output</p>
-                  <h3>Managed Vencord checkout</h3>
+                        <button
+                          className="icon-button danger"
+                          disabled={!!busy}
+                          aria-label={`Remove ${plugin.name}`}
+                          onClick={() => runAction("Removing source", async () => invoke<Manifest>("remove_plugin", { pluginId: plugin.id }))}
+                        >
+                          <Trash size={21} />
+                        </button>
+                      </article>
+                    ))
+                  ) : (
+                    <div className="empty-row">{search ? "No sources match this search." : "No plugin sources added yet."}</div>
+                  )}
                 </div>
               </div>
-              <dl>
-                <dt>Checkout</dt>
-                <dd>{status?.vencordDir ?? "Loading..."}</dd>
-                <dt>Dist</dt>
-                <dd>{status?.distDir ?? "Loading..."}</dd>
-                <dt>Last build</dt>
-                <dd>{manifest?.lastSuccessfulBuild?.builtAt ?? "Never"}</dd>
-              </dl>
-              <div className="action-row">
-                <button disabled={!!busy || missingTools.length > 0} onClick={() => runAction("Checking updates", () => invoke("check_updates"))}>
+
+              <AddSourcePanel
+                visible={showComposer}
+                busy={!!busy}
+                pluginKind={pluginKind}
+                pluginPath={pluginPath}
+                pluginName={pluginName}
+                gitRef={gitRef}
+                setPluginKind={setPluginKind}
+                setPluginPath={setPluginPath}
+                setPluginName={setPluginName}
+                setGitRef={setGitRef}
+                addPlugin={addPlugin}
+              />
+
+              <FooterNote icon={<Info size={23} />}>Plugin sources are application code. Only add sources you trust.</FooterNote>
+            </section>
+          )}
+
+          {activeView === "build" && (
+            <section className="view build-view">
+              <ViewHeader title="Build" subtitle="Generate and inspect your managed Vencord build." />
+
+              <div className="build-summary">
+                <div>
+                  <Folder size={23} />
+                  <span>
+                    {enabledCount}/{plugins.length} sources
+                  </span>
+                </div>
+                <div>
+                  <TerminalWindow size={23} />
+                  <span>{missingTools.length ? `Missing ${missingTools.join(", ")}` : "pnpm toolchain"}</span>
+                </div>
+                <div>
+                  <ArrowClockwise size={23} />
+                  <span>{manifest?.updatePolicy.mode === "auto" ? "Auto updates" : "Manual updates"}</span>
+                </div>
+              </div>
+
+              <div className="build-actions">
+                <button className="primary build-now" disabled={!canBuild} onClick={() => runAction("Building Vencord", () => invoke("build_vencord"))}>
+                  <Play size={25} weight="regular" />
+                  Build now
+                </button>
+                <button className="secondary" disabled={!canBuild} onClick={() => runAction("Checking updates", () => invoke("check_updates"))}>
+                  <ArrowClockwise size={25} />
                   Check updates
                 </button>
-                <button disabled={!!busy || missingTools.length > 0} onClick={() => runAction("Building Vencord", () => invoke("build_vencord"))}>
-                  Build
-                </button>
+                <StatusPill ok={missingTools.length === 0}>{missingTools.length ? "Toolchain incomplete" : "Ready to build"}</StatusPill>
               </div>
-            </section>
 
-            <section className="panel" id="settings">
-              <div className="panel-header">
-                <div>
-                  <p className="eyebrow">Vesktop target</p>
-                  <h3>Apply validated build</h3>
-                </div>
-              </div>
-              <label>
-                state.json
-                <div className="inline-field">
-                  <input value={vesktopStatePath} onChange={(event) => setVesktopStatePath(event.currentTarget.value)} placeholder="Autodetect or paste path" />
-                  <button className="secondary" disabled={!!busy} onClick={autodetectVesktopState}>
-                    Autodetect
-                  </button>
-                </div>
-              </label>
-              <div className="candidate-list">
-                {(status?.vesktopStateCandidates ?? []).slice(0, 3).map((candidate) => (
-                  <button className="path-option" disabled={!!busy} key={candidate} onClick={() => setVesktopStatePath(candidate)}>
-                    {candidate}
-                  </button>
-                ))}
-              </div>
-              <div className="action-row">
-                <label className="switch policy">
-                  <input
-                    type="checkbox"
-                    checked={manifest?.updatePolicy.mode === "auto"}
-                    disabled={!!busy}
-                    onChange={(event) =>
-                      runAction("Saving update policy", async () =>
-                        invoke<Manifest>("set_update_policy", {
-                          request: { mode: event.currentTarget.checked ? "auto" : "manual" },
-                        }),
-                      )
-                    }
+              <section className="data-section">
+                <h3>Build output</h3>
+                <div className="data-card">
+                  <KeyValue label="Checkout path" value={status?.vencordDir ?? "Loading..."} copy />
+                  <KeyValue label="Dist path" value={status?.distDir ?? "Loading..."} copy />
+                  <KeyValue
+                    label="Last build"
+                    value={manifest?.lastSuccessfulBuild ? `${formatDate(manifest.lastSuccessfulBuild.builtAt)}` : "Never"}
+                    status={manifest?.lastSuccessfulBuild ? "Succeeded" : undefined}
                   />
-                  <span>Auto rebuild</span>
+                </div>
+              </section>
+
+              <section className="data-section">
+                <h3>Activity log</h3>
+                <div className="activity-log">
+                  <LogLine tone={busy ? "blue" : "green"} time={busy ? "Now" : "Ready"} text={busy ?? log.split("\n")[0] ?? "Ready."} />
+                  {log
+                    .split("\n")
+                    .slice(1, 4)
+                    .filter(Boolean)
+                    .map((line, index) => (
+                      <LogLine key={`${line}-${index}`} tone="blue" time={`Step ${index + 1}`} text={line} />
+                    ))}
+                </div>
+              </section>
+            </section>
+          )}
+
+          {activeView === "vesktop" && (
+            <section className="view vesktop-view">
+              <ViewHeader title="Vesktop target" subtitle="Choose where the validated build should be applied." />
+
+              <section className="target-card">
+                <label>
+                  <span>state.json</span>
+                  <div className="target-input">
+                    <input value={vesktopStatePath} onChange={(event) => setVesktopStatePath(event.currentTarget.value)} placeholder="Autodetect or paste path" />
+                    <button className="secondary" disabled={!!busy} onClick={autodetectVesktopState}>
+                      Autodetect
+                      <Sparkle size={21} />
+                    </button>
+                  </div>
                 </label>
+              </section>
+
+              <section className="install-card">
+                <div className={detectedInstall ? "check-ring ok" : "check-ring muted"}>
+                  <Check size={27} />
+                </div>
+                <div>
+                  <h3>{detectedInstall ? "Detected install" : "No install selected"}</h3>
+                  <p>{detectedInstall ? "Vesktop installation found and ready." : "Use autodetect or paste a state.json path."}</p>
+                </div>
+                <div className="last-applied">
+                  <span>Last applied</span>
+                  <strong>{manifest?.lastSuccessfulBuild ? formatDate(manifest.lastSuccessfulBuild.builtAt) : "Never"}</strong>
+                </div>
+              </section>
+
+              <section className="rebuild-card">
+                <div>
+                  <h3>Auto rebuild</h3>
+                  <p>Automatically rebuild when sources change.</p>
+                </div>
+                <Switch
+                  checked={manifest?.updatePolicy.mode === "auto"}
+                  disabled={!!busy}
+                  label="Toggle auto rebuild"
+                  onChange={(enabled) =>
+                    runAction("Saving update policy", async () =>
+                      invoke<Manifest>("set_update_policy", {
+                        request: { mode: enabled ? "auto" : "manual" },
+                      }),
+                    )
+                  }
+                />
+              </section>
+
+              <section className="review-card">
+                <h3>Review</h3>
+                <KeyValue icon={<Folder size={22} />} label="Target path" value={vesktopStatePath || "No target selected"} />
+                <KeyValue icon={<Package size={22} />} label="Build version" value={manifest?.lastSuccessfulBuild?.vencordRevision ?? "Not built"} />
+                <KeyValue
+                  icon={<ShieldCheck size={22} />}
+                  label="Validation status"
+                  value={manifest?.lastSuccessfulBuild ? "Validated build ready" : "Build required"}
+                  status={manifest?.lastSuccessfulBuild ? "Validated build ready" : undefined}
+                />
+              </section>
+
+              <div className="apply-footer">
                 <button
+                  className="primary apply-build"
                   disabled={!!busy}
                   onClick={() =>
                     runAction("Applying to Vesktop", () =>
@@ -380,21 +505,183 @@ function App() {
                     )
                   }
                 >
-                  Apply
+                  <UploadSimple size={24} />
+                  Apply build
                 </button>
               </div>
             </section>
-          </section>
+          )}
         </section>
-
-        <section className="log-panel" aria-live="polite">
-          <div className="panel-header">
-            <h3>{busy ?? "Activity log"}</h3>
-          </div>
-          <pre>{log}</pre>
-        </section>
-      </section>
+      </div>
     </main>
+  );
+}
+
+function ViewHeader({ title, subtitle }: { title: string; subtitle: string }) {
+  return (
+    <header className="view-header">
+      <p>Vencord build forge</p>
+      <h1>{title}</h1>
+      <span>{subtitle}</span>
+    </header>
+  );
+}
+
+function AddSourcePanel({
+  visible,
+  busy,
+  pluginKind,
+  pluginPath,
+  pluginName,
+  gitRef,
+  setPluginKind,
+  setPluginPath,
+  setPluginName,
+  setGitRef,
+  addPlugin,
+}: {
+  visible: boolean;
+  busy: boolean;
+  pluginKind: PluginSource["kind"];
+  pluginPath: string;
+  pluginName: string;
+  gitRef: string;
+  setPluginKind: (value: PluginSource["kind"]) => void;
+  setPluginPath: (value: string) => void;
+  setPluginName: (value: string) => void;
+  setGitRef: (value: string) => void;
+  addPlugin: () => void;
+}) {
+  return (
+    <section className={visible ? "drop-panel editing" : "drop-panel"}>
+      {visible ? (
+        <div className="source-form">
+          <label>
+            <span>Type</span>
+            <select value={pluginKind} onChange={(event) => setPluginKind(event.currentTarget.value as PluginSource["kind"])}>
+              <option value="localFolder">Local folder</option>
+              <option value="localFile">.ts file</option>
+              <option value="git">Git repository</option>
+            </select>
+          </label>
+          <label>
+            <span>{pluginKind === "git" ? "Git URL" : "Path"}</span>
+            <input
+              value={pluginPath}
+              onChange={(event) => setPluginPath(event.currentTarget.value)}
+              placeholder={pluginKind === "git" ? "https://github.com/user/vencord-plugin.git" : "/path/to/plugin"}
+            />
+          </label>
+          <label>
+            <span>Name</span>
+            <input value={pluginName} onChange={(event) => setPluginName(event.currentTarget.value)} placeholder="Optional" />
+          </label>
+          {pluginKind === "git" && (
+            <label>
+              <span>Ref</span>
+              <input value={gitRef} onChange={(event) => setGitRef(event.currentTarget.value)} placeholder="branch, tag, or commit" />
+            </label>
+          )}
+          <button className="primary" disabled={busy} onClick={addPlugin}>
+            <Plus size={22} />
+            Add source
+          </button>
+        </div>
+      ) : (
+        <>
+          <div className="drop-icon">
+            <UploadSimple size={24} />
+          </div>
+          <strong>Drop folder, .ts file, or Git URL here</strong>
+          <span>to add a new source</span>
+        </>
+      )}
+    </section>
+  );
+}
+
+function Switch({
+  checked,
+  disabled,
+  label,
+  onChange,
+}: {
+  checked: boolean;
+  disabled?: boolean;
+  label: string;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label className="switch" aria-label={label}>
+      <input type="checkbox" checked={checked} disabled={disabled} onChange={(event) => onChange(event.currentTarget.checked)} />
+      <span />
+    </label>
+  );
+}
+
+function StatusPill({ ok, children }: { ok: boolean; children: ReactNode }) {
+  return (
+    <div className="status-pill">
+      <span className={ok ? "dot ok" : "dot danger"} />
+      {children}
+    </div>
+  );
+}
+
+function KeyValue({
+  label,
+  value,
+  status,
+  copy,
+  icon,
+}: {
+  label: string;
+  value: string;
+  status?: string;
+  copy?: boolean;
+  icon?: ReactNode;
+}) {
+  return (
+    <div className="key-value">
+      <div className="key-label">
+        {icon}
+        <span>{label}</span>
+      </div>
+      <div className="key-result">
+        {status && (
+          <span className="success-status">
+            <Check size={21} />
+            {status}
+          </span>
+        )}
+        <span>{value}</span>
+        {copy && (
+          <button className="copy-button" aria-label={`Copy ${label}`}>
+            <Copy size={21} />
+          </button>
+        )}
+        {!copy && !status && <DotsThreeVertical className="ghost-dots" size={19} />}
+      </div>
+    </div>
+  );
+}
+
+function LogLine({ tone, time, text }: { tone: "green" | "blue"; time: string; text: string }) {
+  return (
+    <div className="log-line">
+      <span className={`dot ${tone}`} />
+      <time>{time}</time>
+      <p>{text}</p>
+    </div>
+  );
+}
+
+function FooterNote({ icon, children }: { icon: ReactNode; children: ReactNode }) {
+  return (
+    <footer className="footer-note">
+      {icon}
+      <span>{children}</span>
+    </footer>
   );
 }
 
