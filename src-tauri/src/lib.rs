@@ -357,16 +357,24 @@ fn run_command(program: &str, args: &[&str], cwd: Option<&Path>) -> Result<Strin
     let output = command
         .output()
         .map_err(|err| format!("Failed to run {program}: {err}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     let mut log = String::new();
-    log.push_str(&String::from_utf8_lossy(&output.stdout));
-    log.push_str(&String::from_utf8_lossy(&output.stderr));
+    log.push_str(&stdout);
+    log.push_str(&stderr);
 
     if output.status.success() {
         Ok(log)
     } else {
+        let status = output.status.code().map_or_else(
+            || "terminated by signal".to_string(),
+            |code| code.to_string(),
+        );
         Err(format!(
-            "Command failed: {program} {}\n{log}",
-            args.join(" ")
+            "Command failed: {program} {}\nExit status: {status}\n\nstdout:\n{}\n\nstderr:\n{}",
+            args.join(" "),
+            stdout.trim_end(),
+            stderr.trim_end()
         ))
     }
 }

@@ -157,6 +157,7 @@ function App() {
     () => status?.tools.filter((tool) => !tool.available).map((tool) => tool.name) ?? [],
     [status],
   );
+  const logLines = useMemo(() => log.split("\n").filter((line) => line.trim().length > 0), [log]);
   const canBuild = !busy && missingTools.length === 0;
   const detectedInstall = Boolean(vesktopStatePath || status?.selectedVesktopState);
 
@@ -404,14 +405,14 @@ function App() {
               <section className="data-section">
                 <h3>Activity log</h3>
                 <div className="activity-log">
-                  <LogLine tone={busy ? "blue" : "green"} time={busy ? "Now" : "Ready"} text={busy ?? log.split("\n")[0] ?? "Ready."} />
-                  {log
-                    .split("\n")
-                    .slice(1, 4)
-                    .filter(Boolean)
-                    .map((line, index) => (
-                      <LogLine key={`${line}-${index}`} tone="blue" time={`Step ${index + 1}`} text={line} />
-                    ))}
+                  {logLines.map((line, index) => (
+                    <LogLine
+                      key={`${line}-${index}`}
+                      tone={index === 0 && !busy ? "green" : "blue"}
+                      time={index === 0 ? (busy ? "Now" : "Ready") : `${index}`.padStart(2, "0")}
+                      text={line}
+                    />
+                  ))}
                 </div>
               </section>
             </section>
