@@ -2,9 +2,11 @@
   <picture>
     <source srcset="design/assets/veskforge-logo-dark.svg" media="(prefers-color-scheme: dark)">
     <source srcset="design/assets/veskforge-logo-light.svg" media="(prefers-color-scheme: light)">
-    <img src="design/assets/veskforge-logo-light.svg" alt="veskforge" width="240">
+    <img src="design/assets/veskforge-logo-light.svg" alt="veskforge" width="200">
   </picture>
 </p>
+
+<h1 align="center">veskforge</h1>
 
 <p align="center">
   <a href="https://github.com/Microck/veskforge/releases"><img src="https://img.shields.io/github/v/release/Microck/veskforge?display_name=tag&style=flat-square&label=release&color=000000" alt="release badge"></a>
@@ -15,8 +17,6 @@
 ---
 
 `veskforge` is an unofficial desktop build manager for Vesktop users who want custom Vencord plugins without hand-running the source workflow every time. it manages a Vencord checkout, installs enabled plugins into `src/userplugins`, builds Vencord, validates the desktop `dist`, and points Vesktop at that build through Vesktop's supported `vencordDir` state setting.
-
-the main path is intentionally boring: add a local plugin or Git URL, build Vencord, apply the validated `dist`, then fully restart Vesktop. veskforge does not patch Vesktop binaries and does not try to runtime-inject plugins into Vencord bundles.
 
 ## why
 
