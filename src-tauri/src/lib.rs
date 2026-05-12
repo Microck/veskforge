@@ -3,8 +3,7 @@ use serde_json::{json, Value};
 use std::{
     env,
     ffi::OsStr,
-    fs,
-    io,
+    fs, io,
     path::{Path, PathBuf},
     process::Command,
     time::{SystemTime, UNIX_EPOCH},
@@ -36,9 +35,16 @@ struct PluginRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 enum PluginSource {
-    LocalFile { path: String },
-    LocalFolder { path: String },
-    Git { url: String, reference: Option<String> },
+    LocalFile {
+        path: String,
+    },
+    LocalFolder {
+        path: String,
+    },
+    Git {
+        url: String,
+        reference: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -170,7 +176,8 @@ fn write_manifest(app: &AppHandle, manifest: &Manifest) -> Result<(), String> {
     let path = manifest_path(app)?;
     let content = serde_json::to_string_pretty(manifest)
         .map_err(|err| format!("Could not serialize manifest: {err}"))?;
-    fs::write(&path, content).map_err(|err| format!("Could not write manifest {}: {err}", path.display()))
+    fs::write(&path, content)
+        .map_err(|err| format!("Could not write manifest {}: {err}", path.display()))
 }
 
 fn now_stamp() -> String {
@@ -263,7 +270,8 @@ fn copy_dir_all(from: &Path, to: &Path) -> io::Result<()> {
 
 fn reset_dir(path: &Path) -> Result<(), String> {
     if path.exists() {
-        fs::remove_dir_all(path).map_err(|err| format!("Could not remove {}: {err}", path.display()))?;
+        fs::remove_dir_all(path)
+            .map_err(|err| format!("Could not remove {}: {err}", path.display()))?;
     }
     fs::create_dir_all(path).map_err(|err| format!("Could not create {}: {err}", path.display()))
 }
@@ -285,7 +293,10 @@ fn run_command(program: &str, args: &[&str], cwd: Option<&Path>) -> Result<Strin
     if output.status.success() {
         Ok(log)
     } else {
-        Err(format!("Command failed: {program} {}\n{log}", args.join(" ")))
+        Err(format!(
+            "Command failed: {program} {}\n{log}",
+            args.join(" ")
+        ))
     }
 }
 
@@ -301,6 +312,30 @@ fn tool_status(name: &str, version_args: &[&str]) -> ToolStatus {
             available: false,
             version: None,
         },
+    }
+}
+
+fn install_pnpm_with_npm(log: &mut String) -> Result<(), String> {
+    if !tool_status("npm", &["--version"]).available {
+        return Err(format!(
+            "Could not install pnpm automatically because Corepack failed and npm is not available on PATH.\n\n\
+            Reinstall Node.js with npm/Corepack included, or install pnpm manually, then reopen veskforge.\n\n\
+            Recommended manual commands:\n\
+            corepack enable pnpm\n\
+            corepack prepare pnpm@latest --activate\n\n\
+            Installer log:\n{log}"
+        ));
+    }
+
+    log.push_str("npm install -g pnpm\n");
+    match run_command("npm", &["install", "-g", "pnpm"], None) {
+        Ok(output) => {
+            log.push_str(&output);
+            Ok(())
+        }
+        Err(err) => Err(format!(
+            "Could not install pnpm with npm.\n{err}\n\nInstaller log:\n{log}"
+        )),
     }
 }
 
@@ -346,20 +381,26 @@ fn install_toolchain(app: AppHandle) -> Result<CommandResult, String> {
                     log.push_str(&output);
                 }
                 Err(err) => {
-                    log.push_str(&format!("Corepack prepare failed, trying npm fallback.\n{err}\n"));
-                    log.push_str(&run_command("npm", &["install", "-g", "pnpm"], None)?);
+                    log.push_str(&format!(
+                        "Corepack prepare failed, trying npm fallback.\n{err}\n"
+                    ));
+                    install_pnpm_with_npm(&mut log)?;
                 }
             }
         }
         Err(err) => {
-            log.push_str(&format!("Corepack unavailable, trying npm fallback.\n{err}\n"));
-            log.push_str(&run_command("npm", &["install", "-g", "pnpm"], None)?);
+            log.push_str(&format!(
+                "Corepack unavailable, trying npm fallback.\n{err}\n"
+            ));
+            install_pnpm_with_npm(&mut log)?;
         }
     }
 
     let pnpm = tool_status("pnpm", &["--version"]);
     if !pnpm.available {
-        return Err(format!("pnpm installation finished, but pnpm is still not available on PATH.\n{log}"));
+        return Err(format!(
+            "pnpm installation finished, but pnpm is still not available on PATH.\n{log}"
+        ));
     }
 
     let manifest = read_manifest(&app)?;
@@ -373,7 +414,9 @@ fn install_toolchain(app: AppHandle) -> Result<CommandResult, String> {
         ),
     };
     if manifest.plugins.is_empty() {
-        result.log.push_str("\nNo plugin sources are configured yet.");
+        result
+            .log
+            .push_str("\nNo plugin sources are configured yet.");
     }
     Ok(result)
 }
@@ -401,17 +444,30 @@ fn vesktop_state_candidates() -> Vec<PathBuf> {
         let home = PathBuf::from(home);
         candidates.push(home.join(".config").join("vesktop").join("state.json"));
         candidates.push(home.join(".config").join("Vesktop").join("state.json"));
-        candidates.push(home.join(".var").join("app").join("dev.vencord.Vesktop").join("config").join("vesktop").join("state.json"));
+        candidates.push(
+            home.join(".var")
+                .join("app")
+                .join("dev.vencord.Vesktop")
+                .join("config")
+                .join("vesktop")
+                .join("state.json"),
+        );
     }
 
     candidates
 }
 
 fn find_existing_vesktop_state() -> Option<PathBuf> {
-    vesktop_state_candidates().into_iter().find(|path| path.exists())
+    vesktop_state_candidates()
+        .into_iter()
+        .find(|path| path.exists())
 }
 
-fn materialize_plugins(app: &AppHandle, manifest: &mut Manifest, log: &mut String) -> Result<(), String> {
+fn materialize_plugins(
+    app: &AppHandle,
+    manifest: &mut Manifest,
+    log: &mut String,
+) -> Result<(), String> {
     let userplugins = vencord_dir(app)?.join("src").join("userplugins");
     reset_dir(&userplugins)?;
 
@@ -422,9 +478,13 @@ fn materialize_plugins(app: &AppHandle, manifest: &mut Manifest, log: &mut Strin
             PluginSource::LocalFile { path } => {
                 let source_path = Path::new(path);
                 validate_local_plugin_path(source_path)?;
-                fs::create_dir_all(&target)
-                    .map_err(|err| format!("Could not create plugin dir {}: {err}", target.display()))?;
-                let extension = source_path.extension().and_then(OsStr::to_str).unwrap_or("ts");
+                fs::create_dir_all(&target).map_err(|err| {
+                    format!("Could not create plugin dir {}: {err}", target.display())
+                })?;
+                let extension = source_path
+                    .extension()
+                    .and_then(OsStr::to_str)
+                    .unwrap_or("ts");
                 fs::copy(path, target.join(format!("index.{extension}")))
                     .map_err(|err| format!("Could not copy plugin file {path}: {err}"))?;
                 plugin.installed_path = target.display().to_string();
@@ -438,13 +498,27 @@ fn materialize_plugins(app: &AppHandle, manifest: &mut Manifest, log: &mut Strin
             PluginSource::Git { url, reference } => {
                 let store = managed_plugins_dir(app)?.join(&plugin.id);
                 if store.exists() {
-                    log.push_str(&run_command("git", &["fetch", "--all", "--tags", "--prune"], Some(&store))?);
+                    log.push_str(&run_command(
+                        "git",
+                        &["fetch", "--all", "--tags", "--prune"],
+                        Some(&store),
+                    )?);
                 } else {
-                    let parent = store.parent().ok_or("Could not resolve plugin store parent")?;
-                    fs::create_dir_all(parent).map_err(|err| format!("Could not create plugin store: {err}"))?;
-                    log.push_str(&run_command("git", &["clone", url, store.to_str().unwrap_or_default()], None)?);
+                    let parent = store
+                        .parent()
+                        .ok_or("Could not resolve plugin store parent")?;
+                    fs::create_dir_all(parent)
+                        .map_err(|err| format!("Could not create plugin store: {err}"))?;
+                    log.push_str(&run_command(
+                        "git",
+                        &["clone", url, store.to_str().unwrap_or_default()],
+                        None,
+                    )?);
                 }
-                if let Some(reference) = reference.as_ref().filter(|reference| !reference.trim().is_empty()) {
+                if let Some(reference) = reference
+                    .as_ref()
+                    .filter(|reference| !reference.trim().is_empty())
+                {
                     log.push_str(&run_command("git", &["checkout", reference], Some(&store))?);
                 }
                 copy_dir_all(&store, &target)
@@ -462,7 +536,10 @@ fn validate_dist(path: &Path) -> Result<(), String> {
     for file in REQUIRED_DIST_FILES {
         let candidate = path.join(file);
         if !candidate.exists() {
-            return Err(format!("Build output is missing required file: {}", candidate.display()));
+            return Err(format!(
+                "Build output is missing required file: {}",
+                candidate.display()
+            ));
         }
     }
     Ok(())
@@ -482,8 +559,12 @@ fn get_environment_status(app: AppHandle) -> Result<EnvironmentStatus, String> {
         workspace_dir: workspace.display().to_string(),
         vencord_dir: vencord.display().to_string(),
         dist_dir: dist.display().to_string(),
-        vesktop_state_candidates: candidates.iter().map(|path| path.display().to_string()).collect(),
-        selected_vesktop_state: find_existing_vesktop_state().map(|path| path.display().to_string()),
+        vesktop_state_candidates: candidates
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect(),
+        selected_vesktop_state: find_existing_vesktop_state()
+            .map(|path| path.display().to_string()),
         tools: vec![
             tool_status("git", &["--version"]),
             tool_status("node", &["--version"]),
@@ -500,7 +581,10 @@ fn add_plugin(app: AppHandle, request: AddPluginRequest) -> Result<Manifest, Str
             validate_local_plugin_path(Path::new(path))?;
         }
         PluginSource::Git { url, .. } => {
-            if !(url.starts_with("https://") || url.starts_with("git@") || url.starts_with("ssh://")) {
+            if !(url.starts_with("https://")
+                || url.starts_with("git@")
+                || url.starts_with("ssh://"))
+            {
                 return Err("Git plugin sources must be https, ssh, or git@ URLs".to_string());
             }
         }
@@ -538,7 +622,11 @@ fn remove_plugin(app: AppHandle, plugin_id: String) -> Result<Manifest, String> 
 }
 
 #[tauri::command]
-fn set_plugin_enabled(app: AppHandle, plugin_id: String, enabled: bool) -> Result<Manifest, String> {
+fn set_plugin_enabled(
+    app: AppHandle,
+    plugin_id: String,
+    enabled: bool,
+) -> Result<Manifest, String> {
     let mut manifest = read_manifest(&app)?;
     let plugin = manifest
         .plugins
@@ -574,7 +662,11 @@ fn check_updates(app: AppHandle) -> Result<CommandResult, String> {
 
     let log = run_command("git", &["fetch", "--tags", "--prune"], Some(&vencord))?;
     let local = run_command("git", &["rev-parse", "--short", "HEAD"], Some(&vencord))?;
-    let remote = run_command("git", &["rev-parse", "--short", "origin/main"], Some(&vencord))?;
+    let remote = run_command(
+        "git",
+        &["rev-parse", "--short", "origin/main"],
+        Some(&vencord),
+    )?;
     let up_to_date = local.trim() == remote.trim();
     Ok(CommandResult {
         ok: up_to_date,
@@ -595,18 +687,30 @@ fn build_vencord(app: AppHandle) -> Result<CommandResult, String> {
 
     if vencord.exists() {
         log.push_str("Updating managed Vencord checkout...\n");
-        log.push_str(&run_command("git", &["fetch", "--tags", "--prune"], Some(&vencord))?);
+        log.push_str(&run_command(
+            "git",
+            &["fetch", "--tags", "--prune"],
+            Some(&vencord),
+        )?);
         log.push_str(&run_command("git", &["checkout", "main"], Some(&vencord))?);
         log.push_str(&run_command("git", &["pull", "--ff-only"], Some(&vencord))?);
     } else {
         log.push_str("Cloning Vencord...\n");
         let workspace = workspace_dir(&app)?;
-        log.push_str(&run_command("git", &["clone", VENCORD_REPO, "Vencord"], Some(&workspace))?);
+        log.push_str(&run_command(
+            "git",
+            &["clone", VENCORD_REPO, "Vencord"],
+            Some(&workspace),
+        )?);
     }
 
     materialize_plugins(&app, &mut manifest, &mut log)?;
     log.push_str("Installing Vencord dependencies...\n");
-    log.push_str(&run_command("pnpm", &["install", "--frozen-lockfile"], Some(&vencord))?);
+    log.push_str(&run_command(
+        "pnpm",
+        &["install", "--frozen-lockfile"],
+        Some(&vencord),
+    )?);
     log.push_str("Building Vencord desktop artifacts...\n");
     log.push_str(&run_command("pnpm", &["build"], Some(&vencord))?);
 
@@ -653,16 +757,24 @@ fn apply_to_vesktop(app: AppHandle, request: ApplyRequest) -> Result<CommandResu
     state["vencordDir"] = Value::String(dist.display().to_string());
 
     if let Some(parent) = state_path.parent() {
-        fs::create_dir_all(parent).map_err(|err| format!("Could not create {}: {err}", parent.display()))?;
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("Could not create {}: {err}", parent.display()))?;
     }
     let content = serde_json::to_string_pretty(&state)
         .map_err(|err| format!("Could not serialize Vesktop state: {err}"))?;
-    fs::write(&state_path, content).map_err(|err| format!("Could not write {}: {err}", state_path.display()))?;
+    fs::write(&state_path, content)
+        .map_err(|err| format!("Could not write {}: {err}", state_path.display()))?;
 
     Ok(CommandResult {
         ok: true,
-        message: "Vesktop now points at the veskforge Vencord build. Fully restart Vesktop to apply it.".to_string(),
-        log: format!("Updated {}\nvencordDir={}", state_path.display(), dist.display()),
+        message:
+            "Vesktop now points at the veskforge Vencord build. Fully restart Vesktop to apply it."
+                .to_string(),
+        log: format!(
+            "Updated {}\nvencordDir={}",
+            state_path.display(),
+            dist.display()
+        ),
     })
 }
 
