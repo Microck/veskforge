@@ -31,11 +31,15 @@ Vencord custom plugins are compile-time plugins. Vesktop loads a built Vencord d
 
 ## requirements
 
-- **windows or linux** for the v1 target platforms
-- **git**, **node**, and **pnpm** available on `PATH`
-- **Vesktop** installed normally
-- **trusted custom plugins** only; veskforge does not sandbox plugin code
-- **Rust toolchain** only if building veskforge from source
+| requirement | needed for | notes |
+| --- | --- | --- |
+| Windows or Linux | running veskforge | Windows releases include installer and portable builds. Linux releases include `.deb`, `.rpm`, and AppImage builds. |
+| Vesktop | applying builds | veskforge writes Vesktop's `vencordDir` setting; it does not patch Vesktop binaries. |
+| Git | building custom Vencord | used to clone/update Vencord and Git plugin sources. |
+| Node.js | building custom Vencord | install the normal Node.js distribution that includes Corepack and npm. |
+| pnpm | building custom Vencord | veskforge detects normal PATH installs plus common Windows locations such as `%APPDATA%\\npm`, `%LOCALAPPDATA%\\pnpm`, Volta, Scoop, and Node.js folders. |
+| trusted custom plugins | every build | plugin code runs as application code; veskforge does not sandbox plugins. |
+| Rust toolchain | building veskforge from source only | not needed when using release downloads. |
 
 ## quickstart
 
@@ -43,7 +47,8 @@ for normal use, install the latest build from [releases](https://github.com/Micr
 
 | platform | artifact |
 | --- | --- |
-| windows | `veskforge_*_x64-setup.exe` |
+| windows portable | `Veskforge_*_x64-portable.exe` |
+| windows installer | `Veskforge_*_x64-setup.exe` or `.msi` |
 | linux | `.deb`, `.rpm`, or `.AppImage` |
 
 to run from source:
@@ -141,7 +146,7 @@ build all configured linux bundles:
 pnpm tauri build
 ```
 
-windows `.exe` installers are built by GitHub Actions on `windows-latest` using the same `pnpm tauri build` command. CI uploads the NSIS installer from `src-tauri/target/release/bundle/nsis/*.exe`, and tagged releases attach that installer to the GitHub release.
+windows portable `.exe` files and installers are built by GitHub Actions on `windows-latest` using the same `pnpm tauri build` command. CI copies the raw release executable into `src-tauri/target/release/bundle/portable/`, uploads it with the NSIS/MSI installers, and tagged releases attach all Windows artifacts to the GitHub release.
 
 ## verification
 

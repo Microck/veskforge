@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     env,
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     fs, io,
     path::{Path, PathBuf},
     process::Command,
@@ -276,9 +276,80 @@ fn reset_dir(path: &Path) -> Result<(), String> {
     fs::create_dir_all(path).map_err(|err| format!("Could not create {}: {err}", path.display()))
 }
 
+fn executable_names(program: &str) -> Vec<String> {
+    if cfg!(windows) && Path::new(program).extension().is_none() {
+        vec![
+            format!("{program}.exe"),
+            format!("{program}.cmd"),
+            format!("{program}.bat"),
+            program.to_string(),
+        ]
+    } else {
+        vec![program.to_string()]
+    }
+}
+
+fn common_tool_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+
+    if cfg!(windows) {
+        if let Ok(appdata) = env::var("APPDATA") {
+            dirs.push(PathBuf::from(appdata).join("npm"));
+        }
+        if let Ok(local_appdata) = env::var("LOCALAPPDATA") {
+            dirs.push(PathBuf::from(&local_appdata).join("pnpm"));
+            dirs.push(PathBuf::from(local_appdata).join("Volta").join("bin"));
+        }
+        if let Ok(program_files) = env::var("ProgramFiles") {
+            dirs.push(PathBuf::from(program_files).join("nodejs"));
+        }
+        if let Ok(program_files_x86) = env::var("ProgramFiles(x86)") {
+            dirs.push(PathBuf::from(program_files_x86).join("nodejs"));
+        }
+        if let Ok(user_profile) = env::var("USERPROFILE") {
+            dirs.push(PathBuf::from(user_profile).join("scoop").join("shims"));
+        }
+    } else if let Ok(home) = env::var("HOME") {
+        let home = PathBuf::from(home);
+        dirs.push(home.join(".local").join("share").join("pnpm"));
+        dirs.push(home.join(".cargo").join("bin"));
+    }
+
+    dirs
+}
+
+fn command_search_dirs() -> Vec<PathBuf> {
+    let mut dirs = env::var_os("PATH")
+        .map(|path| env::split_paths(&path).collect::<Vec<_>>())
+        .unwrap_or_default();
+    dirs.extend(common_tool_dirs());
+    dirs
+}
+
+fn command_path_env() -> Option<OsString> {
+    env::join_paths(command_search_dirs()).ok()
+}
+
+fn resolve_program(program: &str) -> Option<PathBuf> {
+    let program_path = Path::new(program);
+    if program_path.components().count() > 1 {
+        return program_path.is_file().then(|| program_path.to_path_buf());
+    }
+
+    let names = executable_names(program);
+    command_search_dirs()
+        .into_iter()
+        .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
+        .find(|candidate| candidate.is_file())
+}
+
 fn run_command(program: &str, args: &[&str], cwd: Option<&Path>) -> Result<String, String> {
-    let mut command = Command::new(program);
+    let resolved_program = resolve_program(program).unwrap_or_else(|| PathBuf::from(program));
+    let mut command = Command::new(resolved_program);
     command.args(args);
+    if let Some(path) = command_path_env() {
+        command.env("PATH", path);
+    }
     if let Some(cwd) = cwd {
         command.current_dir(cwd);
     }
