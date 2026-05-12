@@ -65,6 +65,7 @@ jobs:
         if: runner.os == 'Linux'
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
+          NO_STRIP: "true"
         run: pnpm tauri build
 
       - name: Prepare Windows portable executable
