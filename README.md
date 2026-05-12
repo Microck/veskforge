@@ -113,19 +113,10 @@ this is intentional. Vencord and Discord internals can change, and a plugin that
 
 ## design assets
 
-the first UI draft was generated with `egaki` using `gpt-image-2`; the logo now uses the provided theme-aware SVG assets:
-
-```bash
-egaki login --show
-egaki models
-egaki image "High fidelity desktop app UI mockup for veskforge..." -m gpt-image-2 -o design/assets/veskforge-ui-draft.png --aspect-ratio 3:2 --json
-```
-
 logo files:
 
 - `design/assets/veskforge-logo-light.svg`
 - `design/assets/veskforge-logo-dark.svg`
-- `design/assets/veskforge-ui-draft.png`
 
 see [design notes](design/README.md) for the UI direction.
 
