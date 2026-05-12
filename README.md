@@ -1,5 +1,9 @@
 <p align="center">
-  <img src="design/assets/veskforge-logo.png" alt="veskforge" width="240">
+  <picture>
+    <source srcset="design/assets/veskforge-logo-dark.svg" media="(prefers-color-scheme: dark)">
+    <source srcset="design/assets/veskforge-logo-light.svg" media="(prefers-color-scheme: light)">
+    <img src="design/assets/veskforge-logo-light.svg" alt="veskforge" width="240">
+  </picture>
 </p>
 
 <p align="center">
@@ -109,18 +113,18 @@ this is intentional. Vencord and Discord internals can change, and a plugin that
 
 ## design assets
 
-the first visual assets were generated with `egaki` using `gpt-image-2`:
+the first UI draft was generated with `egaki` using `gpt-image-2`; the logo now uses the provided theme-aware SVG assets:
 
 ```bash
 egaki login --show
 egaki models
-egaki image "A clean modern vector-style logo for veskforge..." -m gpt-image-2 -o design/assets/veskforge-logo.png --json
 egaki image "High fidelity desktop app UI mockup for veskforge..." -m gpt-image-2 -o design/assets/veskforge-ui-draft.png --aspect-ratio 3:2 --json
 ```
 
-generated files:
+logo files:
 
-- `design/assets/veskforge-logo.png`
+- `design/assets/veskforge-logo-light.svg`
+- `design/assets/veskforge-logo-dark.svg`
 - `design/assets/veskforge-ui-draft.png`
 
 see [design notes](design/README.md) for the UI direction.

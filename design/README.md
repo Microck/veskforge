@@ -2,7 +2,8 @@
 
 Use generated bitmap assets as the visual starting point instead of designing the interface from a blank page.
 
-- Logo source: `assets/veskforge-logo.png`
+- Light logo source: `assets/veskforge-logo-light.svg`
+- Dark logo source: `assets/veskforge-logo-dark.svg`
 - UI draft source: `assets/veskforge-ui-draft.png`
 - Generator: `egaki`
 - Model: `gpt-image-2`

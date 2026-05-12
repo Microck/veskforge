@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useState } from "react";
 import "./App.css";
+import logoDark from "./assets/veskforge-logo-dark.svg";
+import logoLight from "./assets/veskforge-logo-light.svg";
 
 type PluginSource =
   | { kind: "localFile"; path: string }
@@ -137,7 +139,10 @@ function App() {
     <main className="shell">
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark">VF</div>
+          <picture className="brand-mark">
+            <source srcSet={logoLight} media="(prefers-color-scheme: light)" />
+            <img src={logoDark} alt="" />
+          </picture>
           <div>
             <h1>veskforge</h1>
             <p>Custom Vencord builds for Vesktop</p>
