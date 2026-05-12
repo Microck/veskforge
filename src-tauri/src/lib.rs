@@ -1,0 +1,655 @@
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::{
+    env,
+    ffi::OsStr,
+    fs,
+    io,
+    path::{Path, PathBuf},
+    process::Command,
+    time::{SystemTime, UNIX_EPOCH},
+};
+use tauri::{AppHandle, Manager};
+
+const VENCORD_REPO: &str = "https://github.com/Vendicated/Vencord.git";
+const MANIFEST_FILE: &str = "manifest.json";
+const REQUIRED_DIST_FILES: [&str; 5] = [
+    "package.json",
+    "vencordDesktopMain.js",
+    "vencordDesktopPreload.js",
+    "vencordDesktopRenderer.js",
+    "vencordDesktopRenderer.css",
+];
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginRecord {
+    id: String,
+    name: String,
+    source: PluginSource,
+    enabled: bool,
+    installed_path: String,
+    git_ref: Option<String>,
+    last_revision: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum PluginSource {
+    LocalFile { path: String },
+    LocalFolder { path: String },
+    Git { url: String, reference: Option<String> },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdatePolicy {
+    mode: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Manifest {
+    update_policy: UpdatePolicy,
+    plugins: Vec<PluginRecord>,
+    last_successful_build: Option<BuildMetadata>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BuildMetadata {
+    built_at: String,
+    dist_path: String,
+    vencord_revision: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EnvironmentStatus {
+    app_data_dir: String,
+    workspace_dir: String,
+    vencord_dir: String,
+    dist_dir: String,
+    vesktop_state_candidates: Vec<String>,
+    selected_vesktop_state: Option<String>,
+    tools: Vec<ToolStatus>,
+    manifest: Manifest,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ToolStatus {
+    name: String,
+    available: bool,
+    version: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CommandResult {
+    ok: bool,
+    message: String,
+    log: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AddPluginRequest {
+    source: PluginSource,
+    name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetUpdatePolicyRequest {
+    mode: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ApplyRequest {
+    state_path: Option<String>,
+}
+
+fn default_manifest() -> Manifest {
+    Manifest {
+        update_policy: UpdatePolicy {
+            mode: "manual".to_string(),
+        },
+        plugins: Vec::new(),
+        last_successful_build: None,
+    }
+}
+
+fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|err| format!("Could not resolve app data dir: {err}"))?;
+    fs::create_dir_all(&dir).map_err(|err| format!("Could not create app data dir: {err}"))?;
+    Ok(dir)
+}
+
+fn workspace_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app_data_dir(app)?.join("workspace");
+    fs::create_dir_all(&dir).map_err(|err| format!("Could not create workspace dir: {err}"))?;
+    Ok(dir)
+}
+
+fn managed_plugins_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app_data_dir(app)?.join("plugins");
+    fs::create_dir_all(&dir).map_err(|err| format!("Could not create plugin store: {err}"))?;
+    Ok(dir)
+}
+
+fn vencord_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(workspace_dir(app)?.join("Vencord"))
+}
+
+fn dist_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(vencord_dir(app)?.join("dist"))
+}
+
+fn manifest_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app_data_dir(app)?.join(MANIFEST_FILE))
+}
+
+fn read_manifest(app: &AppHandle) -> Result<Manifest, String> {
+    let path = manifest_path(app)?;
+    if !path.exists() {
+        return Ok(default_manifest());
+    }
+
+    let content = fs::read_to_string(&path)
+        .map_err(|err| format!("Could not read manifest {}: {err}", path.display()))?;
+    serde_json::from_str(&content)
+        .map_err(|err| format!("Could not parse manifest {}: {err}", path.display()))
+}
+
+fn write_manifest(app: &AppHandle, manifest: &Manifest) -> Result<(), String> {
+    let path = manifest_path(app)?;
+    let content = serde_json::to_string_pretty(manifest)
+        .map_err(|err| format!("Could not serialize manifest: {err}"))?;
+    fs::write(&path, content).map_err(|err| format!("Could not write manifest {}: {err}", path.display()))
+}
+
+fn now_stamp() -> String {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs().to_string())
+        .unwrap_or_else(|_| "0".to_string())
+}
+
+fn sanitize_id(input: &str) -> String {
+    let mut id = String::new();
+    for ch in input.chars() {
+        if ch.is_ascii_alphanumeric() {
+            id.push(ch.to_ascii_lowercase());
+        } else if !id.ends_with('-') {
+            id.push('-');
+        }
+    }
+    let trimmed = id.trim_matches('-');
+    if trimmed.is_empty() {
+        format!("plugin-{}", now_stamp())
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn plugin_name_from_source(source: &PluginSource, fallback: Option<String>) -> String {
+    if let Some(name) = fallback {
+        let trimmed = name.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+
+    match source {
+        PluginSource::LocalFile { path } | PluginSource::LocalFolder { path } => Path::new(path)
+            .file_stem()
+            .or_else(|| Path::new(path).file_name())
+            .and_then(OsStr::to_str)
+            .unwrap_or("custom-plugin")
+            .to_string(),
+        PluginSource::Git { url, .. } => url
+            .trim_end_matches(".git")
+            .rsplit('/')
+            .next()
+            .filter(|name| !name.is_empty())
+            .unwrap_or("git-plugin")
+            .to_string(),
+    }
+}
+
+fn validate_local_plugin_path(path: &Path) -> Result<(), String> {
+    if path.is_file() {
+        let ext = path.extension().and_then(OsStr::to_str).unwrap_or_default();
+        if matches!(ext, "ts" | "tsx") {
+            return Ok(());
+        }
+        return Err("Local plugin files must end with .ts or .tsx".to_string());
+    }
+
+    if path.is_dir() {
+        let index_ts = path.join("index.ts");
+        let index_tsx = path.join("index.tsx");
+        if index_ts.exists() || index_tsx.exists() {
+            return Ok(());
+        }
+        return Err("Local plugin folders must contain index.ts or index.tsx".to_string());
+    }
+
+    Err(format!("Plugin path does not exist: {}", path.display()))
+}
+
+fn copy_dir_all(from: &Path, to: &Path) -> io::Result<()> {
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        if entry.file_name() == ".git" {
+            continue;
+        }
+        let file_type = entry.file_type()?;
+        let target = to.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_all(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
+}
+
+fn reset_dir(path: &Path) -> Result<(), String> {
+    if path.exists() {
+        fs::remove_dir_all(path).map_err(|err| format!("Could not remove {}: {err}", path.display()))?;
+    }
+    fs::create_dir_all(path).map_err(|err| format!("Could not create {}: {err}", path.display()))
+}
+
+fn run_command(program: &str, args: &[&str], cwd: Option<&Path>) -> Result<String, String> {
+    let mut command = Command::new(program);
+    command.args(args);
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+
+    let output = command
+        .output()
+        .map_err(|err| format!("Failed to run {program}: {err}"))?;
+    let mut log = String::new();
+    log.push_str(&String::from_utf8_lossy(&output.stdout));
+    log.push_str(&String::from_utf8_lossy(&output.stderr));
+
+    if output.status.success() {
+        Ok(log)
+    } else {
+        Err(format!("Command failed: {program} {}\n{log}", args.join(" ")))
+    }
+}
+
+fn tool_status(name: &str, version_args: &[&str]) -> ToolStatus {
+    match run_command(name, version_args, None) {
+        Ok(output) => ToolStatus {
+            name: name.to_string(),
+            available: true,
+            version: output.lines().next().map(str::to_string),
+        },
+        Err(_) => ToolStatus {
+            name: name.to_string(),
+            available: false,
+            version: None,
+        },
+    }
+}
+
+fn git_revision(path: &Path) -> Option<String> {
+    run_command("git", &["rev-parse", "--short", "HEAD"], Some(path))
+        .ok()
+        .map(|output| output.trim().to_string())
+        .filter(|output| !output.is_empty())
+}
+
+fn vesktop_state_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Ok(path) = env::var("VESKTOP_STATE_FILE") {
+        candidates.push(PathBuf::from(path));
+    }
+
+    if let Ok(appdata) = env::var("APPDATA") {
+        candidates.push(PathBuf::from(&appdata).join("vesktop").join("state.json"));
+        candidates.push(PathBuf::from(appdata).join("Vesktop").join("state.json"));
+    }
+
+    if let Ok(home) = env::var("HOME") {
+        let home = PathBuf::from(home);
+        candidates.push(home.join(".config").join("vesktop").join("state.json"));
+        candidates.push(home.join(".config").join("Vesktop").join("state.json"));
+        candidates.push(home.join(".var").join("app").join("dev.vencord.Vesktop").join("config").join("vesktop").join("state.json"));
+    }
+
+    candidates
+}
+
+fn find_existing_vesktop_state() -> Option<PathBuf> {
+    vesktop_state_candidates().into_iter().find(|path| path.exists())
+}
+
+fn materialize_plugins(app: &AppHandle, manifest: &mut Manifest, log: &mut String) -> Result<(), String> {
+    let userplugins = vencord_dir(app)?.join("src").join("userplugins");
+    reset_dir(&userplugins)?;
+
+    for plugin in manifest.plugins.iter_mut().filter(|plugin| plugin.enabled) {
+        let target_id = sanitize_id(&plugin.name);
+        let target = userplugins.join(&target_id);
+        match &plugin.source {
+            PluginSource::LocalFile { path } => {
+                let source_path = Path::new(path);
+                validate_local_plugin_path(source_path)?;
+                fs::create_dir_all(&target)
+                    .map_err(|err| format!("Could not create plugin dir {}: {err}", target.display()))?;
+                let extension = source_path.extension().and_then(OsStr::to_str).unwrap_or("ts");
+                fs::copy(path, target.join(format!("index.{extension}")))
+                    .map_err(|err| format!("Could not copy plugin file {path}: {err}"))?;
+                plugin.installed_path = target.display().to_string();
+            }
+            PluginSource::LocalFolder { path } => {
+                validate_local_plugin_path(Path::new(path))?;
+                copy_dir_all(Path::new(path), &target)
+                    .map_err(|err| format!("Could not copy plugin folder {path}: {err}"))?;
+                plugin.installed_path = target.display().to_string();
+            }
+            PluginSource::Git { url, reference } => {
+                let store = managed_plugins_dir(app)?.join(&plugin.id);
+                if store.exists() {
+                    log.push_str(&run_command("git", &["fetch", "--all", "--tags", "--prune"], Some(&store))?);
+                } else {
+                    let parent = store.parent().ok_or("Could not resolve plugin store parent")?;
+                    fs::create_dir_all(parent).map_err(|err| format!("Could not create plugin store: {err}"))?;
+                    log.push_str(&run_command("git", &["clone", url, store.to_str().unwrap_or_default()], None)?);
+                }
+                if let Some(reference) = reference.as_ref().filter(|reference| !reference.trim().is_empty()) {
+                    log.push_str(&run_command("git", &["checkout", reference], Some(&store))?);
+                }
+                copy_dir_all(&store, &target)
+                    .map_err(|err| format!("Could not copy git plugin {url}: {err}"))?;
+                plugin.installed_path = target.display().to_string();
+                plugin.last_revision = git_revision(&store);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_dist(path: &Path) -> Result<(), String> {
+    for file in REQUIRED_DIST_FILES {
+        let candidate = path.join(file);
+        if !candidate.exists() {
+            return Err(format!("Build output is missing required file: {}", candidate.display()));
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn get_environment_status(app: AppHandle) -> Result<EnvironmentStatus, String> {
+    let manifest = read_manifest(&app)?;
+    let app_data = app_data_dir(&app)?;
+    let workspace = workspace_dir(&app)?;
+    let vencord = vencord_dir(&app)?;
+    let dist = dist_dir(&app)?;
+    let candidates = vesktop_state_candidates();
+
+    Ok(EnvironmentStatus {
+        app_data_dir: app_data.display().to_string(),
+        workspace_dir: workspace.display().to_string(),
+        vencord_dir: vencord.display().to_string(),
+        dist_dir: dist.display().to_string(),
+        vesktop_state_candidates: candidates.iter().map(|path| path.display().to_string()).collect(),
+        selected_vesktop_state: find_existing_vesktop_state().map(|path| path.display().to_string()),
+        tools: vec![
+            tool_status("git", &["--version"]),
+            tool_status("node", &["--version"]),
+            tool_status("pnpm", &["--version"]),
+        ],
+        manifest,
+    })
+}
+
+#[tauri::command]
+fn add_plugin(app: AppHandle, request: AddPluginRequest) -> Result<Manifest, String> {
+    match &request.source {
+        PluginSource::LocalFile { path } | PluginSource::LocalFolder { path } => {
+            validate_local_plugin_path(Path::new(path))?;
+        }
+        PluginSource::Git { url, .. } => {
+            if !(url.starts_with("https://") || url.starts_with("git@") || url.starts_with("ssh://")) {
+                return Err("Git plugin sources must be https, ssh, or git@ URLs".to_string());
+            }
+        }
+    }
+
+    let mut manifest = read_manifest(&app)?;
+    let name = plugin_name_from_source(&request.source, request.name);
+    let mut id = sanitize_id(&name);
+    let base_id = id.clone();
+    let mut suffix = 2;
+    while manifest.plugins.iter().any(|plugin| plugin.id == id) {
+        id = format!("{base_id}-{suffix}");
+        suffix += 1;
+    }
+
+    manifest.plugins.push(PluginRecord {
+        id,
+        name,
+        source: request.source,
+        enabled: true,
+        installed_path: String::new(),
+        git_ref: None,
+        last_revision: None,
+    });
+    write_manifest(&app, &manifest)?;
+    Ok(manifest)
+}
+
+#[tauri::command]
+fn remove_plugin(app: AppHandle, plugin_id: String) -> Result<Manifest, String> {
+    let mut manifest = read_manifest(&app)?;
+    manifest.plugins.retain(|plugin| plugin.id != plugin_id);
+    write_manifest(&app, &manifest)?;
+    Ok(manifest)
+}
+
+#[tauri::command]
+fn set_plugin_enabled(app: AppHandle, plugin_id: String, enabled: bool) -> Result<Manifest, String> {
+    let mut manifest = read_manifest(&app)?;
+    let plugin = manifest
+        .plugins
+        .iter_mut()
+        .find(|plugin| plugin.id == plugin_id)
+        .ok_or_else(|| format!("Unknown plugin: {plugin_id}"))?;
+    plugin.enabled = enabled;
+    write_manifest(&app, &manifest)?;
+    Ok(manifest)
+}
+
+#[tauri::command]
+fn set_update_policy(app: AppHandle, request: SetUpdatePolicyRequest) -> Result<Manifest, String> {
+    if !matches!(request.mode.as_str(), "manual" | "auto") {
+        return Err("Update policy must be manual or auto".to_string());
+    }
+    let mut manifest = read_manifest(&app)?;
+    manifest.update_policy.mode = request.mode;
+    write_manifest(&app, &manifest)?;
+    Ok(manifest)
+}
+
+#[tauri::command]
+fn check_updates(app: AppHandle) -> Result<CommandResult, String> {
+    let vencord = vencord_dir(&app)?;
+    if !vencord.exists() {
+        return Ok(CommandResult {
+            ok: true,
+            message: "Vencord has not been cloned yet.".to_string(),
+            log: "Run Build to clone Vencord first.".to_string(),
+        });
+    }
+
+    let log = run_command("git", &["fetch", "--tags", "--prune"], Some(&vencord))?;
+    let local = run_command("git", &["rev-parse", "--short", "HEAD"], Some(&vencord))?;
+    let remote = run_command("git", &["rev-parse", "--short", "origin/main"], Some(&vencord))?;
+    let up_to_date = local.trim() == remote.trim();
+    Ok(CommandResult {
+        ok: up_to_date,
+        message: if up_to_date {
+            "Managed Vencord checkout is up to date.".to_string()
+        } else {
+            format!("Update available: {} -> {}", local.trim(), remote.trim())
+        },
+        log,
+    })
+}
+
+#[tauri::command]
+fn build_vencord(app: AppHandle) -> Result<CommandResult, String> {
+    let mut manifest = read_manifest(&app)?;
+    let vencord = vencord_dir(&app)?;
+    let mut log = String::new();
+
+    if vencord.exists() {
+        log.push_str("Updating managed Vencord checkout...\n");
+        log.push_str(&run_command("git", &["fetch", "--tags", "--prune"], Some(&vencord))?);
+        log.push_str(&run_command("git", &["checkout", "main"], Some(&vencord))?);
+        log.push_str(&run_command("git", &["pull", "--ff-only"], Some(&vencord))?);
+    } else {
+        log.push_str("Cloning Vencord...\n");
+        let workspace = workspace_dir(&app)?;
+        log.push_str(&run_command("git", &["clone", VENCORD_REPO, "Vencord"], Some(&workspace))?);
+    }
+
+    materialize_plugins(&app, &mut manifest, &mut log)?;
+    log.push_str("Installing Vencord dependencies...\n");
+    log.push_str(&run_command("pnpm", &["install", "--frozen-lockfile"], Some(&vencord))?);
+    log.push_str("Building Vencord desktop artifacts...\n");
+    log.push_str(&run_command("pnpm", &["build"], Some(&vencord))?);
+
+    let dist = dist_dir(&app)?;
+    validate_dist(&dist)?;
+    manifest.last_successful_build = Some(BuildMetadata {
+        built_at: now_stamp(),
+        dist_path: dist.display().to_string(),
+        vencord_revision: git_revision(&vencord),
+    });
+    write_manifest(&app, &manifest)?;
+
+    Ok(CommandResult {
+        ok: true,
+        message: "Vencord build completed and dist was validated.".to_string(),
+        log,
+    })
+}
+
+#[tauri::command]
+fn apply_to_vesktop(app: AppHandle, request: ApplyRequest) -> Result<CommandResult, String> {
+    let dist = dist_dir(&app)?;
+    validate_dist(&dist)?;
+
+    let state_path = request
+        .state_path
+        .filter(|path| !path.trim().is_empty())
+        .map(PathBuf::from)
+        .or_else(find_existing_vesktop_state)
+        .ok_or_else(|| "Could not locate Vesktop state.json. Set VESKTOP_STATE_FILE or paste the path in the UI.".to_string())?;
+
+    let mut state: Value = if state_path.exists() {
+        let content = fs::read_to_string(&state_path)
+            .map_err(|err| format!("Could not read {}: {err}", state_path.display()))?;
+        serde_json::from_str(&content)
+            .map_err(|err| format!("Could not parse {}: {err}", state_path.display()))?
+    } else {
+        json!({})
+    };
+
+    if !state.is_object() {
+        return Err("Vesktop state.json must contain a JSON object".to_string());
+    }
+    state["vencordDir"] = Value::String(dist.display().to_string());
+
+    if let Some(parent) = state_path.parent() {
+        fs::create_dir_all(parent).map_err(|err| format!("Could not create {}: {err}", parent.display()))?;
+    }
+    let content = serde_json::to_string_pretty(&state)
+        .map_err(|err| format!("Could not serialize Vesktop state: {err}"))?;
+    fs::write(&state_path, content).map_err(|err| format!("Could not write {}: {err}", state_path.display()))?;
+
+    Ok(CommandResult {
+        ok: true,
+        message: "Vesktop now points at the veskforge Vencord build. Fully restart Vesktop to apply it.".to_string(),
+        log: format!("Updated {}\nvencordDir={}", state_path.display(), dist.display()),
+    })
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .invoke_handler(tauri::generate_handler![
+            get_environment_status,
+            add_plugin,
+            remove_plugin,
+            set_plugin_enabled,
+            set_update_policy,
+            check_updates,
+            build_vencord,
+            apply_to_vesktop
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running veskforge");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn sanitize_id_keeps_cli_safe_names() {
+        assert_eq!(sanitize_id("My Cool Plugin"), "my-cool-plugin");
+        assert_eq!(sanitize_id("Vencord++ Tools"), "vencord-tools");
+    }
+
+    #[test]
+    fn local_plugin_file_validation_accepts_ts_and_tsx_only() {
+        let dir = env::temp_dir().join(format!("veskforge-test-{}", now_stamp()));
+        fs::create_dir_all(&dir).unwrap();
+
+        let ts = dir.join("plugin.ts");
+        let tsx = dir.join("plugin.tsx");
+        let js = dir.join("plugin.js");
+        for path in [&ts, &tsx, &js] {
+            let mut file = fs::File::create(path).unwrap();
+            writeln!(file, "export default {{}};").unwrap();
+        }
+
+        assert!(validate_local_plugin_path(&ts).is_ok());
+        assert!(validate_local_plugin_path(&tsx).is_ok());
+        assert!(validate_local_plugin_path(&js).is_err());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn local_plugin_folder_requires_index_entrypoint() {
+        let dir = env::temp_dir().join(format!("veskforge-folder-test-{}", now_stamp()));
+        fs::create_dir_all(&dir).unwrap();
+        assert!(validate_local_plugin_path(&dir).is_err());
+
+        fs::write(dir.join("index.tsx"), "export default {};").unwrap();
+        assert!(validate_local_plugin_path(&dir).is_ok());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+}
