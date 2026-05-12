@@ -80,7 +80,7 @@ src-tauri/target/release/bundle/deb/
 
 | step | behavior |
 | --- | --- |
-| add plugin | register a local `.ts` / `.tsx` file, local folder with `index.ts(x)`, or Git URL |
+| add plugin | register a local source file, local plugin folder, or HTTPS GitHub repo after validating the Vencord plugin entrypoint |
 | build | clone or update `Vendicated/Vencord`, recreate `src/userplugins`, run `pnpm install --frozen-lockfile`, then `pnpm build` |
 | validate | require `package.json`, `vencordDesktopMain.js`, `vencordDesktopPreload.js`, `vencordDesktopRenderer.js`, `vencordDesktopRenderer.css` |
 | apply | write the validated `dist` path to Vesktop `state.json` as `vencordDir` |
@@ -90,11 +90,11 @@ src-tauri/target/release/bundle/deb/
 
 | source | expected shape |
 | --- | --- |
-| local file | `.ts` or `.tsx`; copied into a generated plugin folder as `index.ts` |
-| local folder | folder containing `index.ts` or `index.tsx` |
-| Git URL | `https://`, `ssh://`, or `git@` URL, with optional branch, tag, or commit ref |
+| local file | `.ts`, `.tsx`, `.js`, or `.jsx` Vencord module with a default export |
+| local folder | folder containing `index.ts`, `index.tsx`, `index.js`, or `index.jsx`; veskforge can auto-detect one nested plugin folder |
+| GitHub repo | `https://github.com/owner/repo`, with optional branch, tag, or commit ref; veskforge clones and auto-detects one plugin folder |
 
-veskforge recreates the managed Vencord `src/userplugins` folder from the manifest on each build. disabled plugins stay in the manifest but are not materialized into the next build.
+veskforge recreates the managed Vencord `src/userplugins` folder from the manifest on each build. disabled plugins stay in the manifest but are not materialized into the next build. see [plugin source formats](docs/plugin-source-formats.md) for supported and rejected source shapes.
 
 ## paths
 

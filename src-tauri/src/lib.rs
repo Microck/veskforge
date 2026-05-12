@@ -19,6 +19,18 @@ const REQUIRED_DIST_FILES: [&str; 5] = [
     "vencordDesktopRenderer.js",
     "vencordDesktopRenderer.css",
 ];
+const PLUGIN_ENTRYPOINT_FILES: [&str; 4] = ["index.ts", "index.tsx", "index.js", "index.jsx"];
+const PLUGIN_FILE_EXTENSIONS: [&str; 4] = ["ts", "tsx", "js", "jsx"];
+const IGNORED_PLUGIN_DISCOVERY_DIRS: [&str; 8] = [
+    ".git",
+    "node_modules",
+    "dist",
+    "build",
+    "target",
+    ".next",
+    ".turbo",
+    "coverage",
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -263,34 +275,110 @@ fn normalize_github_plugin_url(url: &str) -> Result<String, String> {
 fn validate_local_plugin_path(path: &Path) -> Result<(), String> {
     if path.is_file() {
         let ext = path.extension().and_then(OsStr::to_str).unwrap_or_default();
-        if matches!(ext, "ts" | "tsx") {
+        if PLUGIN_FILE_EXTENSIONS.contains(&ext) {
+            validate_plugin_entrypoint_content(path)?;
             return Ok(());
         }
-        return Err("Local plugin files must end with .ts or .tsx".to_string());
+        return Err("Local plugin files must end with .ts, .tsx, .js, or .jsx".to_string());
     }
 
     if path.is_dir() {
-        let index_ts = path.join("index.ts");
-        let index_tsx = path.join("index.tsx");
-        if index_ts.exists() || index_tsx.exists() {
-            return Ok(());
-        }
-        return Err("Local plugin folders must contain index.ts or index.tsx".to_string());
+        let source_dir = resolve_plugin_source_dir(path, &path.display().to_string())?;
+        validate_plugin_entrypoint(&source_dir, &path.display().to_string())?;
+        return Ok(());
     }
 
     Err(format!("Plugin path does not exist: {}", path.display()))
 }
 
-fn validate_plugin_entrypoint(path: &Path, plugin_name: &str) -> Result<(), String> {
-    if path.join("index.ts").exists() || path.join("index.tsx").exists() {
+fn plugin_entrypoint_path(path: &Path) -> Option<PathBuf> {
+    PLUGIN_ENTRYPOINT_FILES
+        .iter()
+        .map(|entrypoint| path.join(entrypoint))
+        .find(|entrypoint| entrypoint.is_file())
+}
+
+fn has_plugin_entrypoint(path: &Path) -> bool {
+    plugin_entrypoint_path(path).is_some()
+}
+
+fn validate_plugin_entrypoint_content(path: &Path) -> Result<(), String> {
+    let content = fs::read_to_string(path)
+        .map_err(|err| format!("Could not read plugin entrypoint {}: {err}", path.display()))?;
+    if content.contains("export default") {
         return Ok(());
     }
 
     Err(format!(
-        "Plugin source \"{plugin_name}\" is not a Vencord userplugin folder. Expected {} or {}.",
-        path.join("index.ts").display(),
-        path.join("index.tsx").display()
+        "Plugin entrypoint {} must be a Vencord plugin module with a default export. BetterDiscord .plugin.js files are not compatible.",
+        path.display()
     ))
+}
+
+fn validate_plugin_entrypoint(path: &Path, plugin_name: &str) -> Result<(), String> {
+    if let Some(entrypoint) = plugin_entrypoint_path(path) {
+        validate_plugin_entrypoint_content(&entrypoint)?;
+        return Ok(());
+    }
+
+    Err(format!(
+        "Plugin source \"{plugin_name}\" is not a Vencord userplugin folder. Expected one of {}.",
+        PLUGIN_ENTRYPOINT_FILES.join(", ")
+    ))
+}
+
+fn collect_plugin_source_dirs(root: &Path, candidates: &mut Vec<PathBuf>) -> Result<(), String> {
+    let entries =
+        fs::read_dir(root).map_err(|err| format!("Could not inspect {}: {err}", root.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|err| format!("Could not inspect {}: {err}", root.display()))?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        let name = entry.file_name();
+        if name
+            .to_str()
+            .is_some_and(|name| IGNORED_PLUGIN_DISCOVERY_DIRS.contains(&name))
+        {
+            continue;
+        }
+
+        if has_plugin_entrypoint(&path) {
+            candidates.push(path);
+        } else {
+            collect_plugin_source_dirs(&path, candidates)?;
+        }
+    }
+    Ok(())
+}
+
+fn resolve_plugin_source_dir(root: &Path, plugin_name: &str) -> Result<PathBuf, String> {
+    if has_plugin_entrypoint(root) {
+        return Ok(root.to_path_buf());
+    }
+
+    let mut candidates = Vec::new();
+    collect_plugin_source_dirs(root, &mut candidates)?;
+    match candidates.len() {
+        0 => Err(format!(
+            "Could not find a Vencord plugin in \"{plugin_name}\". Expected one of {} at the repository root or in exactly one subfolder.",
+            PLUGIN_ENTRYPOINT_FILES.join(", ")
+        )),
+        1 => Ok(candidates.remove(0)),
+        _ => {
+            let shown = candidates
+                .iter()
+                .take(8)
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join("\n");
+            Err(format!(
+                "Could not auto-detect one plugin in \"{plugin_name}\" because multiple plugin folders were found:\n{shown}\nAdd a repository that contains exactly one Vencord plugin."
+            ))
+        }
+    }
 }
 
 fn copy_dir_all(from: &Path, to: &Path) -> io::Result<()> {
@@ -613,7 +701,8 @@ fn materialize_plugins(
             }
             PluginSource::LocalFolder { path } => {
                 validate_local_plugin_path(Path::new(path))?;
-                copy_dir_all(Path::new(path), &target)
+                let source_dir = resolve_plugin_source_dir(Path::new(path), &plugin.name)?;
+                copy_dir_all(&source_dir, &target)
                     .map_err(|err| format!("Could not copy plugin folder {path}: {err}"))?;
                 validate_plugin_entrypoint(&target, &plugin.name)?;
                 plugin.installed_path = target.display().to_string();
@@ -645,7 +734,8 @@ fn materialize_plugins(
                 {
                     log.push_str(&run_command("git", &["checkout", reference], Some(&store))?);
                 }
-                copy_dir_all(&store, &target)
+                let source_dir = resolve_plugin_source_dir(&store, &plugin.name)?;
+                copy_dir_all(&source_dir, &target)
                     .map_err(|err| format!("Could not copy git plugin {normalized_url}: {err}"))?;
                 validate_plugin_entrypoint(&target, &plugin.name)?;
                 plugin.installed_path = target.display().to_string();
@@ -655,6 +745,41 @@ fn materialize_plugins(
     }
 
     Ok(())
+}
+
+fn validate_git_plugin_source(
+    app: &AppHandle,
+    plugin_id: &str,
+    url: &str,
+    reference: Option<&str>,
+    plugin_name: &str,
+) -> Result<(), String> {
+    let store = managed_plugins_dir(app)?.join(plugin_id);
+    if store.exists() {
+        run_command(
+            "git",
+            &["fetch", "--all", "--tags", "--prune"],
+            Some(&store),
+        )?;
+    } else {
+        let parent = store
+            .parent()
+            .ok_or("Could not resolve plugin store parent")?;
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("Could not create plugin store: {err}"))?;
+        run_command(
+            "git",
+            &["clone", url, store.to_str().unwrap_or_default()],
+            None,
+        )?;
+    }
+
+    if let Some(reference) = reference.filter(|reference| !reference.trim().is_empty()) {
+        run_command("git", &["checkout", reference], Some(&store))?;
+    }
+
+    let source_dir = resolve_plugin_source_dir(&store, plugin_name)?;
+    validate_plugin_entrypoint(&source_dir, plugin_name)
 }
 
 fn validate_dist(path: &Path) -> Result<(), String> {
@@ -724,6 +849,10 @@ fn add_plugin(app: AppHandle, request: AddPluginRequest) -> Result<Manifest, Str
     while manifest.plugins.iter().any(|plugin| plugin.id == id) {
         id = format!("{base_id}-{suffix}");
         suffix += 1;
+    }
+
+    if let PluginSource::Git { url, reference } = &source {
+        validate_git_plugin_source(&app, &id, url, reference.as_deref(), &name)?;
     }
 
     manifest.plugins.push(PluginRecord {
@@ -935,21 +1064,40 @@ mod tests {
     }
 
     #[test]
-    fn local_plugin_file_validation_accepts_ts_and_tsx_only() {
+    fn local_plugin_file_validation_accepts_supported_source_extensions() {
         let dir = env::temp_dir().join(format!("veskforge-test-{}", now_stamp()));
         fs::create_dir_all(&dir).unwrap();
 
         let ts = dir.join("plugin.ts");
         let tsx = dir.join("plugin.tsx");
         let js = dir.join("plugin.js");
-        for path in [&ts, &tsx, &js] {
+        let jsx = dir.join("plugin.jsx");
+        let plugin_js = dir.join("plugin.plugin.js");
+        let css = dir.join("plugin.css");
+        for path in [&ts, &tsx, &js, &jsx, &plugin_js] {
             let mut file = fs::File::create(path).unwrap();
             writeln!(file, "export default {{}};").unwrap();
         }
+        fs::write(&css, "body {}").unwrap();
 
         assert!(validate_local_plugin_path(&ts).is_ok());
         assert!(validate_local_plugin_path(&tsx).is_ok());
-        assert!(validate_local_plugin_path(&js).is_err());
+        assert!(validate_local_plugin_path(&js).is_ok());
+        assert!(validate_local_plugin_path(&jsx).is_ok());
+        assert!(validate_local_plugin_path(&plugin_js).is_ok());
+        assert!(validate_local_plugin_path(&css).is_err());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn local_plugin_file_rejects_commonjs_plugin_files() {
+        let dir = env::temp_dir().join(format!("veskforge-commonjs-test-{}", now_stamp()));
+        fs::create_dir_all(&dir).unwrap();
+
+        let betterdiscord = dir.join("plugin.plugin.js");
+        fs::write(&betterdiscord, "module.exports = class Plugin {};").unwrap();
+        assert!(validate_local_plugin_path(&betterdiscord).is_err());
 
         fs::remove_dir_all(dir).unwrap();
     }
@@ -960,7 +1108,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         assert!(validate_local_plugin_path(&dir).is_err());
 
-        fs::write(dir.join("index.tsx"), "export default {};").unwrap();
+        fs::write(dir.join("index.jsx"), "export default {};").unwrap();
         assert!(validate_local_plugin_path(&dir).is_ok());
 
         fs::remove_dir_all(dir).unwrap();
@@ -997,8 +1145,38 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         assert!(validate_plugin_entrypoint(&dir, "Missing Entrypoint").is_err());
 
-        fs::write(dir.join("index.ts"), "export default {};").unwrap();
+        fs::write(dir.join("index.js"), "export default {};").unwrap();
         assert!(validate_plugin_entrypoint(&dir, "Missing Entrypoint").is_ok());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn plugin_source_dir_auto_detects_one_nested_plugin() {
+        let dir = env::temp_dir().join(format!("veskforge-detect-test-{}", now_stamp()));
+        let plugin = dir.join("packages").join("the-plugin");
+        fs::create_dir_all(&plugin).unwrap();
+        fs::write(plugin.join("index.tsx"), "export default {};").unwrap();
+
+        assert_eq!(
+            resolve_plugin_source_dir(&dir, "Nested Plugin").unwrap(),
+            plugin
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn plugin_source_dir_rejects_ambiguous_repositories() {
+        let dir = env::temp_dir().join(format!("veskforge-ambiguous-test-{}", now_stamp()));
+        let first = dir.join("first");
+        let second = dir.join("second");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        fs::write(first.join("index.ts"), "export default {};").unwrap();
+        fs::write(second.join("index.tsx"), "export default {};").unwrap();
+
+        assert!(resolve_plugin_source_dir(&dir, "Ambiguous").is_err());
 
         fs::remove_dir_all(dir).unwrap();
     }
