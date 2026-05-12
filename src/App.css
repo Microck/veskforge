@@ -729,12 +729,15 @@ button:disabled {
   font-size: 13px;
 }
 
+.log-line .dot {
+  margin-top: 6px;
+}
+
 .log-line p {
   min-width: 0;
   margin: 0;
   color: #c2cad7;
-  font-family: "Cascadia Code", "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1.4;
   overflow-wrap: anywhere;
   white-space: pre-wrap;

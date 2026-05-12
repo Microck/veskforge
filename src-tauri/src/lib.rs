@@ -229,6 +229,37 @@ fn plugin_name_from_source(source: &PluginSource, fallback: Option<String>) -> S
     }
 }
 
+fn normalize_github_plugin_url(url: &str) -> Result<String, String> {
+    let trimmed = url.trim();
+    let without_scheme = trimmed
+        .strip_prefix("https://github.com/")
+        .ok_or_else(|| "Git plugin sources must be HTTPS GitHub repository URLs.".to_string())?;
+
+    if without_scheme.contains("/blob/") || without_scheme.contains("/tree/") {
+        return Err(
+            "Git plugin sources must point at a repository root, not a GitHub file or folder URL."
+                .to_string(),
+        );
+    }
+    if trimmed.starts_with("https://raw.githubusercontent.com/") {
+        return Err(
+            "Raw GitHub file URLs are not valid Git plugin sources. Add the repository URL instead."
+                .to_string(),
+        );
+    }
+
+    let parts = without_scheme
+        .trim_end_matches('/')
+        .trim_end_matches(".git")
+        .split('/')
+        .collect::<Vec<_>>();
+    if parts.len() != 2 || parts.iter().any(|part| part.trim().is_empty()) {
+        return Err("Git plugin sources must look like https://github.com/owner/repo.".to_string());
+    }
+
+    Ok(format!("https://github.com/{}/{}.git", parts[0], parts[1]))
+}
+
 fn validate_local_plugin_path(path: &Path) -> Result<(), String> {
     if path.is_file() {
         let ext = path.extension().and_then(OsStr::to_str).unwrap_or_default();
@@ -248,6 +279,18 @@ fn validate_local_plugin_path(path: &Path) -> Result<(), String> {
     }
 
     Err(format!("Plugin path does not exist: {}", path.display()))
+}
+
+fn validate_plugin_entrypoint(path: &Path, plugin_name: &str) -> Result<(), String> {
+    if path.join("index.ts").exists() || path.join("index.tsx").exists() {
+        return Ok(());
+    }
+
+    Err(format!(
+        "Plugin source \"{plugin_name}\" is not a Vencord userplugin folder. Expected {} or {}.",
+        path.join("index.ts").display(),
+        path.join("index.tsx").display()
+    ))
 }
 
 fn copy_dir_all(from: &Path, to: &Path) -> io::Result<()> {
@@ -551,8 +594,7 @@ fn materialize_plugins(
     reset_dir(&userplugins)?;
 
     for plugin in manifest.plugins.iter_mut().filter(|plugin| plugin.enabled) {
-        let target_id = sanitize_id(&plugin.name);
-        let target = userplugins.join(&target_id);
+        let target = userplugins.join(&plugin.id);
         match &plugin.source {
             PluginSource::LocalFile { path } => {
                 let source_path = Path::new(path);
@@ -566,15 +608,18 @@ fn materialize_plugins(
                     .unwrap_or("ts");
                 fs::copy(path, target.join(format!("index.{extension}")))
                     .map_err(|err| format!("Could not copy plugin file {path}: {err}"))?;
+                validate_plugin_entrypoint(&target, &plugin.name)?;
                 plugin.installed_path = target.display().to_string();
             }
             PluginSource::LocalFolder { path } => {
                 validate_local_plugin_path(Path::new(path))?;
                 copy_dir_all(Path::new(path), &target)
                     .map_err(|err| format!("Could not copy plugin folder {path}: {err}"))?;
+                validate_plugin_entrypoint(&target, &plugin.name)?;
                 plugin.installed_path = target.display().to_string();
             }
             PluginSource::Git { url, reference } => {
+                let normalized_url = normalize_github_plugin_url(url)?;
                 let store = managed_plugins_dir(app)?.join(&plugin.id);
                 if store.exists() {
                     log.push_str(&run_command(
@@ -590,7 +635,7 @@ fn materialize_plugins(
                         .map_err(|err| format!("Could not create plugin store: {err}"))?;
                     log.push_str(&run_command(
                         "git",
-                        &["clone", url, store.to_str().unwrap_or_default()],
+                        &["clone", &normalized_url, store.to_str().unwrap_or_default()],
                         None,
                     )?);
                 }
@@ -601,7 +646,8 @@ fn materialize_plugins(
                     log.push_str(&run_command("git", &["checkout", reference], Some(&store))?);
                 }
                 copy_dir_all(&store, &target)
-                    .map_err(|err| format!("Could not copy git plugin {url}: {err}"))?;
+                    .map_err(|err| format!("Could not copy git plugin {normalized_url}: {err}"))?;
+                validate_plugin_entrypoint(&target, &plugin.name)?;
                 plugin.installed_path = target.display().to_string();
                 plugin.last_revision = git_revision(&store);
             }
@@ -655,22 +701,23 @@ fn get_environment_status(app: AppHandle) -> Result<EnvironmentStatus, String> {
 
 #[tauri::command]
 fn add_plugin(app: AppHandle, request: AddPluginRequest) -> Result<Manifest, String> {
-    match &request.source {
-        PluginSource::LocalFile { path } | PluginSource::LocalFolder { path } => {
-            validate_local_plugin_path(Path::new(path))?;
+    let source = match request.source {
+        PluginSource::LocalFile { path } => {
+            validate_local_plugin_path(Path::new(&path))?;
+            PluginSource::LocalFile { path }
         }
-        PluginSource::Git { url, .. } => {
-            if !(url.starts_with("https://")
-                || url.starts_with("git@")
-                || url.starts_with("ssh://"))
-            {
-                return Err("Git plugin sources must be https, ssh, or git@ URLs".to_string());
-            }
+        PluginSource::LocalFolder { path } => {
+            validate_local_plugin_path(Path::new(&path))?;
+            PluginSource::LocalFolder { path }
         }
-    }
+        PluginSource::Git { url, reference } => PluginSource::Git {
+            url: normalize_github_plugin_url(&url)?,
+            reference,
+        },
+    };
 
     let mut manifest = read_manifest(&app)?;
-    let name = plugin_name_from_source(&request.source, request.name);
+    let name = plugin_name_from_source(&source, request.name);
     let mut id = sanitize_id(&name);
     let base_id = id.clone();
     let mut suffix = 2;
@@ -682,7 +729,7 @@ fn add_plugin(app: AppHandle, request: AddPluginRequest) -> Result<Manifest, Str
     manifest.plugins.push(PluginRecord {
         id,
         name,
-        source: request.source,
+        source,
         enabled: true,
         installed_path: String::new(),
         git_ref: None,
@@ -915,6 +962,43 @@ mod tests {
 
         fs::write(dir.join("index.tsx"), "export default {};").unwrap();
         assert!(validate_local_plugin_path(&dir).is_ok());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn github_plugin_urls_are_repository_roots() {
+        assert_eq!(
+            normalize_github_plugin_url("https://github.com/Microck/discord-gfm-tables").unwrap(),
+            "https://github.com/Microck/discord-gfm-tables.git"
+        );
+        assert_eq!(
+            normalize_github_plugin_url("https://github.com/Microck/discord-gfm-tables.git")
+                .unwrap(),
+            "https://github.com/Microck/discord-gfm-tables.git"
+        );
+
+        assert!(normalize_github_plugin_url(
+            "https://github.com/Microck/discord-gfm-tables/blob/main/index.ts"
+        )
+        .is_err());
+        assert!(normalize_github_plugin_url(
+            "https://raw.githubusercontent.com/Microck/discord-gfm-tables/main/index.ts"
+        )
+        .is_err());
+        assert!(
+            normalize_github_plugin_url("git@github.com:Microck/discord-gfm-tables.git").is_err()
+        );
+    }
+
+    #[test]
+    fn materialized_plugin_requires_index_entrypoint() {
+        let dir = env::temp_dir().join(format!("veskforge-entrypoint-test-{}", now_stamp()));
+        fs::create_dir_all(&dir).unwrap();
+        assert!(validate_plugin_entrypoint(&dir, "Missing Entrypoint").is_err());
+
+        fs::write(dir.join("index.ts"), "export default {};").unwrap();
+        assert!(validate_plugin_entrypoint(&dir, "Missing Entrypoint").is_ok());
 
         fs::remove_dir_all(dir).unwrap();
     }
