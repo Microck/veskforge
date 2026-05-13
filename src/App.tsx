@@ -23,7 +23,9 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { Icon } from "@phosphor-icons/react";
-import type { ReactNode } from "react";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import type { DragDropEvent } from "@tauri-apps/api/webview";
+import type { DragEvent, ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import "./App.css";
 
@@ -81,6 +83,7 @@ type SourceFeedback = {
 };
 
 type View = "sources" | "build" | "vesktop";
+type LogTone = "idle" | "running" | "success" | "error";
 
 const sourceLabels: Record<PluginSource["kind"], string> = {
   localFile: "Plugin file",
@@ -128,6 +131,30 @@ function errorMessage(error: unknown) {
   return message;
 }
 
+function trimWrappingQuotes(value: string) {
+  const trimmed = value.trim();
+  const first = trimmed[0];
+  const last = trimmed[trimmed.length - 1];
+  if (trimmed.length >= 2 && ((first === '"' && last === '"') || (first === "'" && last === "'"))) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
+function sourceFromInput(value: string, reference?: string): PluginSource {
+  const source = trimWrappingQuotes(value);
+  if (source.startsWith("https://github.com/")) {
+    return { kind: "git", url: source, reference: reference?.trim() || undefined };
+  }
+
+  const lower = source.toLowerCase();
+  if ([".ts", ".tsx", ".js", ".jsx"].some((extension) => lower.endsWith(extension))) {
+    return { kind: "localFile", path: source };
+  }
+
+  return { kind: "localFolder", path: source };
+}
+
 async function openExternal(url: string) {
   try {
     await openUrl(url);
@@ -141,6 +168,7 @@ function App() {
   const [activeView, setActiveView] = useState<View>("sources");
   const [busy, setBusy] = useState<string | null>(null);
   const [log, setLog] = useState("Ready.");
+  const [logTone, setLogTone] = useState<LogTone>("idle");
   const [pluginKind, setPluginKind] = useState<PluginSource["kind"]>("localFolder");
   const [pluginPath, setPluginPath] = useState("");
   const [pluginName, setPluginName] = useState("");
@@ -149,6 +177,7 @@ function App() {
   const [search, setSearch] = useState("");
   const [showComposer, setShowComposer] = useState(false);
   const [sourceFeedback, setSourceFeedback] = useState<SourceFeedback | null>(null);
+  const [dropTargetActive, setDropTargetActive] = useState(false);
 
   const manifest = status?.manifest;
   const plugins = manifest?.plugins ?? [];
@@ -177,6 +206,7 @@ function App() {
 
   async function runAction(label: string, action: () => Promise<CommandResult | Manifest>) {
     setBusy(label);
+    setLogTone("running");
     setLog(`${label}...`);
     try {
       const result = await action();
@@ -187,27 +217,22 @@ function App() {
         await refresh();
         setLog(`${result.message}\n\n${result.log}`.trim());
       }
+      setLogTone("success");
     } catch (error) {
       setLog(errorMessage(error));
+      setLogTone("error");
     } finally {
       setBusy(null);
     }
   }
 
-  async function addPlugin() {
-    const trimmedSource = pluginPath.trim();
-    if (!trimmedSource) {
+  async function addSource(source: PluginSource, name?: string) {
+    const shownSource = source.kind === "git" ? source.url : source.path;
+    if (!shownSource.trim()) {
       const message = "Enter a local path or Git URL before adding a plugin.";
       setSourceFeedback({ tone: "error", message });
       return;
     }
-
-    const source: PluginSource =
-      pluginKind === "git"
-        ? { kind: "git", url: trimmedSource, reference: gitRef.trim() || undefined }
-        : pluginKind === "localFile"
-          ? { kind: "localFile", path: trimmedSource }
-          : { kind: "localFolder", path: trimmedSource };
 
     setBusy("Adding source");
     setSourceFeedback({ tone: "info", message: "Validating source..." });
@@ -215,14 +240,14 @@ function App() {
       await invoke<Manifest>("add_plugin", {
         request: {
           source,
-          name: pluginName.trim() || undefined,
+          name: name?.trim() || undefined,
         },
       });
       await refresh();
       setSourceFeedback({
         tone: "success",
         message:
-          pluginKind === "git"
+          source.kind === "git"
             ? "Source added. Git repository shape was validated."
             : "Source added. Plugin entrypoint was validated.",
       });
@@ -238,8 +263,50 @@ function App() {
     }
   }
 
+  async function addPlugin() {
+    const source =
+      pluginKind === "git"
+        ? sourceFromInput(pluginPath, gitRef)
+        : pluginKind === "localFile"
+          ? { kind: "localFile" as const, path: trimWrappingQuotes(pluginPath) }
+          : { kind: "localFolder" as const, path: trimWrappingQuotes(pluginPath) };
+    await addSource(source, pluginName);
+  }
+
+  async function addDroppedSource(value: string) {
+    const source = sourceFromInput(value);
+    setPluginKind(source.kind);
+    setPluginPath(source.kind === "git" ? source.url : source.path);
+    setGitRef("");
+    setShowComposer(true);
+    await addSource(source);
+  }
+
+  function handleHtmlDrop(event: DragEvent<HTMLElement>) {
+    event.preventDefault();
+    setDropTargetActive(false);
+    const textSource = event.dataTransfer.getData("text/uri-list") || event.dataTransfer.getData("text/plain");
+    if (textSource.trim()) {
+      void addDroppedSource(textSource);
+      return;
+    }
+
+    const [file] = Array.from(event.dataTransfer.files);
+    const path = file ? (file as File & { path?: string }).path : undefined;
+    if (path) {
+      void addDroppedSource(path);
+      return;
+    }
+
+    setSourceFeedback({
+      tone: "error",
+      message: "Could not read a file path from this drop. In the desktop app, drop the file from Explorer or paste its full path.",
+    });
+  }
+
   async function autodetectVesktopState() {
     setBusy("Detecting Vesktop");
+    setLogTone("running");
     setLog("Checking common Vesktop state locations...");
     try {
       const nextStatus = await invoke<EnvironmentStatus>("get_environment_status");
@@ -251,8 +318,10 @@ function App() {
           ? `Detected Vesktop state.json:\n${detectedPath}`
           : `No Vesktop state.json found in known locations:\n${nextStatus.vesktopStateCandidates.join("\n")}`,
       );
+      setLogTone("success");
     } catch (error) {
       setLog(errorMessage(error));
+      setLogTone("error");
     } finally {
       setBusy(null);
     }
@@ -273,13 +342,18 @@ function App() {
         }
 
         setBusy("Startup check");
+        setLogTone("running");
         setLog("Checking managed Vencord updates...");
         const result = await invoke<CommandResult>("run_startup_check");
         if (cancelled) return;
         await refresh();
         setLog(`${result.message}\n\n${result.log}`.trim());
+        setLogTone("success");
       } catch (error) {
-        if (!cancelled) setLog(errorMessage(error));
+        if (!cancelled) {
+          setLog(errorMessage(error));
+          setLogTone("error");
+        }
       } finally {
         if (!cancelled) setBusy(null);
       }
@@ -290,6 +364,39 @@ function App() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+
+    async function listenForFileDrops() {
+      try {
+        unlisten = await getCurrentWebview().onDragDropEvent((event) => {
+          if (cancelled || activeView !== "sources") return;
+          const payload: DragDropEvent = event.payload;
+          if (payload.type === "enter" || payload.type === "over") {
+            setDropTargetActive(true);
+            return;
+          }
+          if (payload.type === "leave") {
+            setDropTargetActive(false);
+            return;
+          }
+          setDropTargetActive(false);
+          const [path] = payload.paths;
+          if (path) void addDroppedSource(path);
+        });
+      } catch {
+        // Browser previews do not expose Tauri's native file-drop event stream.
+      }
+    }
+
+    void listenForFileDrops();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [activeView]);
 
   return (
     <main className="app-shell">
@@ -404,6 +511,13 @@ function App() {
                 setPluginName={setPluginName}
                 setGitRef={setGitRef}
                 addPlugin={addPlugin}
+                dropTargetActive={dropTargetActive}
+                onDragOver={(event) => {
+                  event.preventDefault();
+                  setDropTargetActive(true);
+                }}
+                onDragLeave={() => setDropTargetActive(false)}
+                onDrop={handleHtmlDrop}
               />
 
               <SourceFeedbackPanel feedback={sourceFeedback} />
@@ -470,7 +584,7 @@ function App() {
                   {logLines.map((line, index) => (
                     <LogLine
                       key={`${line}-${index}`}
-                      tone={index === 0 && !busy ? "green" : "blue"}
+                      tone={index === 0 ? logTone : "blue"}
                       time={index === 0 ? (busy ? "Now" : "Ready") : `${index}`.padStart(2, "0")}
                       text={line}
                     />
@@ -599,6 +713,10 @@ function AddSourcePanel({
   setPluginName,
   setGitRef,
   addPlugin,
+  dropTargetActive,
+  onDragOver,
+  onDragLeave,
+  onDrop,
 }: {
   visible: boolean;
   busy: boolean;
@@ -611,9 +729,18 @@ function AddSourcePanel({
   setPluginName: (value: string) => void;
   setGitRef: (value: string) => void;
   addPlugin: () => void;
+  dropTargetActive: boolean;
+  onDragOver: (event: DragEvent<HTMLElement>) => void;
+  onDragLeave: () => void;
+  onDrop: (event: DragEvent<HTMLElement>) => void;
 }) {
   return (
-    <section className={visible ? "drop-panel editing" : "drop-panel"}>
+    <section
+      className={`${visible ? "drop-panel editing" : "drop-panel"}${dropTargetActive ? " drag-active" : ""}`}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
       {visible ? (
         <div className="source-form">
           <label>
@@ -764,10 +891,11 @@ function KeyValue({
   );
 }
 
-function LogLine({ tone, time, text }: { tone: "green" | "blue"; time: string; text: string }) {
+function LogLine({ tone, time, text }: { tone: LogTone | "blue"; time: string; text: string }) {
+  const dotTone = tone === "success" ? "green" : tone === "error" ? "danger" : "blue";
   return (
     <div className="log-line">
-      <span className={`dot ${tone}`} />
+      <span className={`dot ${dotTone}`} />
       <time>{time}</time>
       <p>{text}</p>
     </div>

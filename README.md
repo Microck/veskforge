@@ -80,9 +80,9 @@ src-tauri/target/release/bundle/deb/
 
 | step | behavior |
 | --- | --- |
-| add plugin | register a local source file, local plugin folder, or HTTPS GitHub repo after validating the Vencord plugin entrypoint |
+| add plugin | paste or drop a local source file, local plugin folder, or HTTPS GitHub repo after validating the Vencord plugin entrypoint |
 | build | clone or update `Vendicated/Vencord`, recreate `src/userplugins`, run `pnpm install --frozen-lockfile`, then `pnpm build` |
-| validate | require `package.json`, `vencordDesktopMain.js`, `vencordDesktopPreload.js`, `vencordDesktopRenderer.js`, `vencordDesktopRenderer.css` |
+| validate | require `vencordDesktopMain.js`, `vencordDesktopPreload.js`, `vencordDesktopRenderer.js`, `vencordDesktopRenderer.css` |
 | apply | write the validated `dist` path to Vesktop `state.json` as `vencordDir` |
 | startup check | optionally launch at login, check the managed Vencord checkout, and rebuild/apply only when Auto rebuild is enabled |
 | restart | fully restart Vesktop so it loads the custom Vencord build |

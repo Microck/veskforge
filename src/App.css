@@ -496,6 +496,9 @@ button:disabled {
   color: #f4f5f8;
   background: rgba(18, 22, 28, 0.46);
   font-size: 16px;
+  transition:
+    border-color 160ms var(--ease),
+    background 160ms var(--ease);
 }
 
 .drop-panel > span {
@@ -506,6 +509,13 @@ button:disabled {
 .drop-panel.editing {
   place-items: stretch;
   padding: 14px;
+}
+
+.drop-panel.drag-active {
+  border-color: rgba(236, 118, 151, 0.72);
+  background:
+    linear-gradient(180deg, rgba(236, 118, 151, 0.12), rgba(236, 118, 151, 0.04)),
+    rgba(18, 22, 28, 0.7);
 }
 
 .source-feedback {

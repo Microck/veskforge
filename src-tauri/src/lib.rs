@@ -12,8 +12,7 @@ use tauri::{AppHandle, Manager};
 
 const VENCORD_REPO: &str = "https://github.com/Vendicated/Vencord.git";
 const MANIFEST_FILE: &str = "manifest.json";
-const REQUIRED_DIST_FILES: [&str; 5] = [
-    "package.json",
+const REQUIRED_DIST_FILES: [&str; 4] = [
     "vencordDesktopMain.js",
     "vencordDesktopPreload.js",
     "vencordDesktopRenderer.js",
@@ -274,8 +273,21 @@ fn plugin_name_from_source(source: &PluginSource, fallback: Option<String>) -> S
     }
 }
 
+fn trim_wrapping_quotes(input: &str) -> String {
+    let trimmed = input.trim();
+    if trimmed.len() >= 2 {
+        let bytes = trimmed.as_bytes();
+        let first = bytes[0];
+        let last = bytes[bytes.len() - 1];
+        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
+            return trimmed[1..trimmed.len() - 1].trim().to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
 fn normalize_github_plugin_url(url: &str) -> Result<String, String> {
-    let trimmed = url.trim();
+    let trimmed = trim_wrapping_quotes(url);
     let without_scheme = trimmed
         .strip_prefix("https://github.com/")
         .ok_or_else(|| "Git plugin sources must be HTTPS GitHub repository URLs.".to_string())?;
@@ -1063,10 +1075,12 @@ fn get_environment_status(app: AppHandle) -> Result<EnvironmentStatus, String> {
 fn add_plugin(app: AppHandle, request: AddPluginRequest) -> Result<Manifest, String> {
     let source = match request.source {
         PluginSource::LocalFile { path } => {
+            let path = trim_wrapping_quotes(&path);
             validate_local_plugin_path(Path::new(&path))?;
             PluginSource::LocalFile { path }
         }
         PluginSource::LocalFolder { path } => {
+            let path = trim_wrapping_quotes(&path);
             validate_local_plugin_path(Path::new(&path))?;
             PluginSource::LocalFolder { path }
         }
@@ -1428,6 +1442,32 @@ mod tests {
         assert!(
             normalize_github_plugin_url("git@github.com:Microck/discord-gfm-tables.git").is_err()
         );
+    }
+
+    #[test]
+    fn source_inputs_trim_wrapping_quotes() {
+        assert_eq!(
+            trim_wrapping_quotes(r#""D:\Descargas\jn v2\discord-gfm-tables.plugin.js""#),
+            r#"D:\Descargas\jn v2\discord-gfm-tables.plugin.js"#
+        );
+        assert_eq!(
+            normalize_github_plugin_url("'https://github.com/Microck/discord-gfm-tables'").unwrap(),
+            "https://github.com/Microck/discord-gfm-tables.git"
+        );
+    }
+
+    #[test]
+    fn dist_validation_matches_current_vencord_desktop_outputs() {
+        let dir = env::temp_dir().join(format!("veskforge-dist-test-{}", now_stamp()));
+        fs::create_dir_all(&dir).unwrap();
+        for file in REQUIRED_DIST_FILES {
+            fs::write(dir.join(file), "").unwrap();
+        }
+
+        assert!(validate_dist(&dir).is_ok());
+        assert!(!REQUIRED_DIST_FILES.contains(&"package.json"));
+
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
