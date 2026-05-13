@@ -85,6 +85,55 @@ src-tauri/target/release/bundle/deb/
 | apply | write the validated `dist` path to Vesktop `state.json` as `vencordDir` |
 | restart | fully restart Vesktop so it loads the custom Vencord build |
 
+## architecture
+
+veskforge keeps the risky parts explicit: plugin sources are validated before they enter the managed Vencord checkout, and Vesktop state is only updated after a desktop build produces the expected artifacts.
+
+```mermaid
+flowchart LR
+  user["User"] -->|adds sources and runs actions| ui["veskforge UI"]
+  ui -->|invokes commands| backend["Tauri Rust backend"]
+
+  subgraph app_state["veskforge app data"]
+    manifest[("Plugin manifest")]
+    workspace["Managed Vencord checkout"]
+    userplugins["src/userplugins"]
+    dist["Validated desktop dist"]
+  end
+
+  subgraph plugin_sources["Plugin sources"]
+    local_file["Local plugin file"]
+    local_folder["Local plugin folder"]
+    github_repo["GitHub repository"]
+  end
+
+  subgraph vesktop_state["Vesktop"]
+    state_json["state.json"]
+    vesktop["Vesktop runtime"]
+  end
+
+  backend -->|stores enabled sources| manifest
+  backend -->|normalizes and validates| plugin_sources
+  plugin_sources -->|materializes enabled plugins| userplugins
+  backend -->|clones or updates| workspace
+  workspace -->|contains| userplugins
+  backend -->|runs pnpm install and build| workspace
+  workspace -->|emits desktop bundle| dist
+  backend -->|requires expected files| dist
+  backend -->|writes vencordDir| state_json
+  state_json -->|points to custom bundle| dist
+  vesktop -->|loads on restart| state_json
+
+  classDef boundary fill:#f7f7fb,stroke:#9ca3af,color:#111827
+  classDef storage fill:#eef2ff,stroke:#4f46e5,color:#1e1b4b
+  classDef build fill:#fdf2f8,stroke:#db2777,color:#831843
+  classDef external fill:#fff7ed,stroke:#c2410c,color:#7c2d12
+  class app_state,plugin_sources,vesktop_state boundary
+  class manifest,state_json storage
+  class workspace,userplugins,dist build
+  class local_file,local_folder,github_repo,vesktop external
+```
+
 ## plugin sources
 
 | source | expected shape |
