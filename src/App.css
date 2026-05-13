@@ -296,7 +296,7 @@ select {
 }
 
 .vesktop-view {
-  overflow-y: hidden;
+  overflow-y: scroll;
   padding-bottom: 20px;
 }
 
@@ -643,7 +643,7 @@ button:disabled {
 
 .build-actions {
   display: grid;
-  grid-template-columns: auto auto auto auto minmax(0, 1fr);
+  grid-template-columns: auto auto auto minmax(0, 1fr);
   align-items: center;
   gap: 14px;
   margin-bottom: 18px;
@@ -652,11 +652,6 @@ button:disabled {
 .build-now {
   justify-self: start;
   min-width: 170px;
-}
-
-.update-build {
-  width: 46px;
-  padding: 0;
 }
 
 .status-pill {
@@ -930,9 +925,15 @@ button:disabled {
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  gap: 12px;
   border-top: 1px solid var(--line);
   min-height: 84px;
   margin-top: 16px;
+}
+
+.build-before-apply {
+  width: 46px;
+  padding: 0;
 }
 
 .apply-build {

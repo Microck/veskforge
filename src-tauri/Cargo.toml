@@ -1,6 +1,6 @@
 [package]
 name = "veskforge"
-version = "0.1.15"
+version = "0.1.16"
 description = "Unofficial custom Vencord build manager for Vesktop."
 authors = ["Microck"]
 license = "MIT"
