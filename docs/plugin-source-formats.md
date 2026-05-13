@@ -1,6 +1,6 @@
 # Plugin Source Formats
 
-veskforge targets Vencord userplugins for Vesktop. It does not install arbitrary Discord client-mod plugins.
+veskforge targets Vencord userplugins for Vesktop. It does not install arbitrary Discord client-mod plugins. See [Discord plugin formats](discord-plugin-formats.md) for the compatibility survey behind that boundary.
 
 ## Supported
 
