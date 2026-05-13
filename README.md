@@ -37,7 +37,7 @@ Vencord custom plugins are compile-time plugins. Vesktop loads a built Vencord d
 
 | requirement | needed for | notes |
 | --- | --- | --- |
-| Windows or Linux | running veskforge | Windows releases include installer and portable builds. Linux releases include `.deb`, `.rpm`, and AppImage builds. |
+| Windows or Linux | running veskforge | Windows releases include installer builds. Linux releases include `.deb`, `.rpm`, and AppImage builds. |
 | Vesktop | applying builds | veskforge writes Vesktop's `vencordDir` setting; it does not patch Vesktop binaries. |
 | Git | building custom Vencord | used to clone/update Vencord and Git plugin sources. |
 | Node.js | building custom Vencord | install the normal Node.js distribution that includes Corepack and npm. |
@@ -51,7 +51,6 @@ for normal use, install the latest build from [releases](https://github.com/Micr
 
 | platform | artifact |
 | --- | --- |
-| windows portable | `Veskforge_*_x64-portable.exe` |
 | windows installer | `Veskforge_*_x64-setup.exe` or `.msi` |
 | linux | `.deb`, `.rpm`, or `.AppImage` |
 
@@ -150,7 +149,7 @@ build all configured linux bundles:
 pnpm tauri build
 ```
 
-windows portable `.exe` files and installers are built by GitHub Actions on `windows-latest` using the same `pnpm tauri build` command. CI copies the raw release executable into `src-tauri/target/release/bundle/portable/`, uploads it with the NSIS/MSI installers, and tagged releases attach all Windows artifacts to the GitHub release.
+windows installers are built by GitHub Actions on `windows-latest` using the same `pnpm tauri build` command. Tagged releases attach the NSIS `.exe` and MSI artifacts to the GitHub release.
 
 ## verification
 
