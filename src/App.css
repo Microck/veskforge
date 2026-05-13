@@ -256,6 +256,24 @@ select {
   background: rgba(236, 118, 151, 0.42);
 }
 
+.build-view {
+  overflow-y: scroll;
+  padding: 34px 44px 28px 40px;
+}
+
+.build-view .view-header {
+  margin-bottom: 18px;
+}
+
+.build-view .view-header h1 {
+  font-size: 31px;
+}
+
+.build-view .view-header span {
+  margin-top: 10px;
+  font-size: 15px;
+}
+
 .view-header {
   margin-bottom: 22px;
 }
@@ -599,19 +617,19 @@ button:disabled {
   display: inline-grid;
   grid-template-columns: auto auto auto;
   width: fit-content;
-  min-height: 48px;
+  min-height: 43px;
   align-items: center;
-  margin-bottom: 24px;
+  margin-bottom: 18px;
   color: #b8c0ce;
-  font-size: 14px;
+  font-size: 13px;
 }
 
 .build-summary > div {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 12px;
   border-right: 1px solid var(--line);
-  padding: 0 24px 0 18px;
+  padding: 0 20px 0 16px;
 }
 
 .build-summary > div:last-child {
@@ -625,15 +643,20 @@ button:disabled {
 
 .build-actions {
   display: grid;
-  grid-template-columns: auto auto auto minmax(0, 1fr);
+  grid-template-columns: auto auto auto auto minmax(0, 1fr);
   align-items: center;
-  gap: 22px;
-  margin-bottom: 24px;
+  gap: 14px;
+  margin-bottom: 18px;
 }
 
 .build-now {
   justify-self: start;
   min-width: 170px;
+}
+
+.update-build {
+  width: 46px;
+  padding: 0;
 }
 
 .status-pill {
@@ -675,7 +698,7 @@ button:disabled {
 }
 
 .data-section {
-  margin-bottom: 22px;
+  margin-bottom: 16px;
 }
 
 .data-section h3,
@@ -689,13 +712,13 @@ button:disabled {
 }
 
 .data-section h3 {
-  margin-bottom: 13px;
+  margin-bottom: 10px;
 }
 
 .key-value {
   display: grid;
   grid-template-columns: minmax(150px, 0.7fr) minmax(0, 1.4fr);
-  min-height: 50px;
+  min-height: 45px;
   align-items: center;
   border-bottom: 1px solid var(--line);
   padding: 0 24px;
@@ -760,7 +783,7 @@ button:disabled {
 
 .activity-log {
   font-family: "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  max-height: 260px;
+  max-height: 238px;
   overflow-y: auto;
   overflow-x: hidden;
 }

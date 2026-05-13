@@ -548,6 +548,15 @@ function App() {
               </div>
 
               <div className="build-actions">
+                <button
+                  className="secondary update-build"
+                  disabled={!canBuild}
+                  onClick={() => runAction("Updating patched build", () => invoke("build_vencord"))}
+                  title="Update managed Vencord and build with enabled plugin sources"
+                  aria-label="Update patched build"
+                >
+                  <ArrowClockwise size={22} />
+                </button>
                 <button className="primary build-now" disabled={!canBuild} onClick={() => runAction("Building Vencord", () => invoke("build_vencord"))}>
                   <Play size={25} weight="regular" />
                   Build now

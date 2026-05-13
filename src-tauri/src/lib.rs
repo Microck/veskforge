@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::{
     env,
     ffi::{OsStr, OsString},
@@ -21,6 +23,8 @@ const REQUIRED_DIST_FILES: [&str; 4] = [
 const PLUGIN_ENTRYPOINT_FILES: [&str; 4] = ["index.ts", "index.tsx", "index.js", "index.jsx"];
 const PLUGIN_FILE_EXTENSIONS: [&str; 4] = ["ts", "tsx", "js", "jsx"];
 const BETTERDISCORD_PLUGIN_SUFFIX: &str = ".plugin.js";
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 const IGNORED_PLUGIN_DISCOVERY_DIRS: [&str; 8] = [
     ".git",
     "node_modules",
@@ -621,10 +625,19 @@ fn resolve_program(program: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
+#[cfg(windows)]
+fn hide_subprocess_window(command: &mut Command) {
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn hide_subprocess_window(_command: &mut Command) {}
+
 fn run_command(program: &str, args: &[&str], cwd: Option<&Path>) -> Result<String, String> {
     let resolved_program = resolve_program(program).unwrap_or_else(|| PathBuf::from(program));
     let mut command = Command::new(resolved_program);
     command.args(args);
+    hide_subprocess_window(&mut command);
     if let Some(path) = command_path_env() {
         command.env("PATH", path);
     }
