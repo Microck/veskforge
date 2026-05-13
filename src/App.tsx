@@ -226,6 +226,31 @@ function App() {
     }
   }
 
+  async function launchPatchedVesktop() {
+    const vesktopRunning = await invoke<boolean>("is_vesktop_running");
+    let closeRunning = false;
+
+    if (vesktopRunning) {
+      closeRunning = window.confirm(
+        "Vesktop is already open. Veskforge needs to close and reopen Vesktop so the patched build can load. Continue?",
+      );
+      if (!closeRunning) {
+        setLog("Launch cancelled. Vesktop is still running.");
+        setLogTone("idle");
+        return;
+      }
+    }
+
+    await runAction("Launching patched Vesktop", () =>
+      invoke<CommandResult>("run_patched_vesktop", {
+        request: {
+          statePath: vesktopStatePath.trim() || undefined,
+          closeRunning,
+        },
+      }),
+    );
+  }
+
   async function addSource(source: PluginSource, name?: string) {
     const shownSource = source.kind === "git" ? source.url : source.path;
     if (!shownSource.trim()) {
@@ -672,13 +697,7 @@ function App() {
                 <button
                   className="secondary build-before-apply"
                   disabled={!!busy}
-                  onClick={() =>
-                    runAction("Launching patched Vesktop", () =>
-                      invoke("run_patched_vesktop", {
-                        request: { statePath: vesktopStatePath.trim() || undefined },
-                      }),
-                    )
-                  }
+                  onClick={launchPatchedVesktop}
                   title="Launch Vesktop with the patched build"
                   aria-label="Launch patched Vesktop"
                 >

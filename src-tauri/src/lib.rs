@@ -145,6 +145,8 @@ struct SetStartupRequest {
 #[serde(rename_all = "camelCase")]
 struct ApplyRequest {
     state_path: Option<String>,
+    #[serde(default)]
+    close_running: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -520,10 +522,33 @@ fn js_string_literal(value: &str) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "\"Imported plugin\"".to_string())
 }
 
+fn betterdiscord_metadata_value(source: &str, key: &str) -> Option<String> {
+    let marker = format!("@{key}");
+    source.lines().find_map(|line| {
+        let trimmed = line
+            .trim()
+            .trim_start_matches('*')
+            .trim()
+            .strip_prefix(&marker)?
+            .trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    })
+}
+
 fn betterdiscord_compat_wrapper(source: &str, plugin_name: &str) -> String {
+    let name =
+        betterdiscord_metadata_value(source, "name").unwrap_or_else(|| plugin_name.to_string());
+    let description = betterdiscord_metadata_value(source, "description").unwrap_or_else(|| {
+        "Imported from a BetterDiscord-style .plugin.js source by veskforge.".to_string()
+    });
+    let author =
+        betterdiscord_metadata_value(source, "author").unwrap_or_else(|| "veskforge".to_string());
+
     format!(
-        "import definePlugin from \"@utils/types\";\n\nconst module = {{ exports: {{}} }};\nconst exports = module.exports;\n\n{source}\n\nconst PluginClass = module.exports && module.exports.default ? module.exports.default : module.exports;\nlet instance;\n\nexport default definePlugin({{\n  name: {name},\n  description: \"Imported from a BetterDiscord-style .plugin.js source by veskforge.\",\n  authors: [{{ name: \"veskforge\" }}],\n  start() {{\n    if (typeof PluginClass === \"function\") {{\n      instance = new PluginClass();\n      instance.start?.();\n      return;\n    }}\n\n    PluginClass?.start?.();\n  }},\n  stop() {{\n    instance?.stop?.();\n    PluginClass?.stop?.();\n    instance = undefined;\n  }},\n}});\n",
-        name = js_string_literal(plugin_name),
+        "import definePlugin from \"@utils/types\";\n\nconst module = {{ exports: {{}} }};\nconst exports = module.exports;\n\n{source}\n\nconst PluginClass = module.exports && module.exports.default ? module.exports.default : module.exports;\nlet instance;\n\nexport default definePlugin({{\n  name: {name},\n  description: {description},\n  authors: [{{ name: {author}, id: 0n }}],\n  requiresRestart: false,\n  start() {{\n    if (typeof PluginClass === \"function\") {{\n      instance = new PluginClass();\n      instance.start?.();\n      return;\n    }}\n\n    PluginClass?.start?.();\n  }},\n  stop() {{\n    instance?.stop?.();\n    PluginClass?.stop?.();\n    instance = undefined;\n  }},\n}});\n",
+        name = js_string_literal(&name),
+        description = js_string_literal(&description),
+        author = js_string_literal(&author),
     )
 }
 
@@ -922,6 +947,82 @@ fn launch_vesktop(state_path: &Path) -> Result<String, String> {
     Err("Could not find a Vesktop executable to launch. Apply succeeded, but start Vesktop manually.".to_string())
 }
 
+fn command_succeeds(program: &str, args: &[&str]) -> bool {
+    let resolved_program = resolve_program(program).unwrap_or_else(|| PathBuf::from(program));
+    let mut command = Command::new(resolved_program);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    hide_subprocess_window(&mut command);
+    if let Some(path) = command_path_env() {
+        command.env("PATH", path);
+    }
+
+    command.status().is_ok_and(|status| status.success())
+}
+
+#[cfg(target_os = "windows")]
+fn vesktop_is_running() -> bool {
+    run_command("tasklist", &["/FI", "IMAGENAME eq Vesktop.exe"], None)
+        .map(|output| output.to_ascii_lowercase().contains("vesktop.exe"))
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "linux")]
+fn vesktop_is_running() -> bool {
+    command_succeeds("pgrep", &["-x", "vesktop"])
+        || command_succeeds("pgrep", &["-x", "Vesktop"])
+        || command_succeeds("pgrep", &["-f", "dev.vencord.Vesktop"])
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+fn vesktop_is_running() -> bool {
+    false
+}
+
+#[cfg(target_os = "windows")]
+fn close_vesktop() -> Result<String, String> {
+    let mut log = String::new();
+    for image_name in ["Vesktop.exe", "vesktop.exe"] {
+        match run_command("taskkill", &["/IM", image_name, "/T", "/F"], None) {
+            Ok(output) => log.push_str(&output),
+            Err(err) if err.contains("not found") || err.contains("No tasks") => {}
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(if log.trim().is_empty() {
+        "Vesktop was not running.".to_string()
+    } else {
+        log
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn close_vesktop() -> Result<String, String> {
+    let mut log = String::new();
+    for args in [
+        &["-x", "vesktop"][..],
+        &["-x", "Vesktop"][..],
+        &["-f", "dev.vencord.Vesktop"][..],
+    ] {
+        if command_succeeds("pgrep", args) {
+            log.push_str(&run_command("pkill", args, None)?);
+        }
+    }
+    Ok(if log.trim().is_empty() {
+        "Vesktop was not running.".to_string()
+    } else {
+        log
+    })
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+fn close_vesktop() -> Result<String, String> {
+    Err("Closing Vesktop is currently supported on Windows and Linux.".to_string())
+}
+
 #[cfg(target_os = "windows")]
 fn startup_command() -> Result<String, String> {
     let exe = env::current_exe()
@@ -1312,7 +1413,13 @@ fn run_startup_check(app: AppHandle) -> Result<CommandResult, String> {
     }
 
     let build_result = build_vencord(app.clone())?;
-    let apply_result = apply_to_vesktop(app, ApplyRequest { state_path: None })?;
+    let apply_result = apply_to_vesktop(
+        app,
+        ApplyRequest {
+            state_path: None,
+            close_running: false,
+        },
+    )?;
     Ok(CommandResult {
         ok: true,
         message: "Startup update was rebuilt and applied to Vesktop.".to_string(),
@@ -1431,10 +1538,19 @@ fn run_patched_vesktop(app: AppHandle, request: ApplyRequest) -> Result<CommandR
         .map(PathBuf::from)
         .or_else(find_existing_vesktop_state)
         .ok_or_else(|| "Could not locate Vesktop state.json. Set VESKTOP_STATE_FILE or paste the path in the UI.".to_string())?;
+    let mut restart_log = String::new();
+    if vesktop_is_running() {
+        if !request.close_running {
+            return Err("VESKTOP_RUNNING: Vesktop is already open. Close and reopen it to load the patched build.".to_string());
+        }
+        restart_log = close_vesktop()?;
+    }
+
     let apply_result = apply_to_vesktop(
         app,
         ApplyRequest {
             state_path: Some(state_path.display().to_string()),
+            close_running: false,
         },
     )?;
     let launch_log = launch_vesktop(&state_path)?;
@@ -1442,8 +1558,17 @@ fn run_patched_vesktop(app: AppHandle, request: ApplyRequest) -> Result<CommandR
     Ok(CommandResult {
         ok: true,
         message: "Patched Vesktop build was applied and Vesktop was launched.".to_string(),
-        log: format!("{}\n{launch_log}", apply_result.log),
+        log: [restart_log, apply_result.log, launch_log]
+            .into_iter()
+            .filter(|entry| !entry.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n"),
     })
+}
+
+#[tauri::command]
+fn is_vesktop_running() -> bool {
+    vesktop_is_running()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1462,7 +1587,8 @@ pub fn run() {
             run_startup_check,
             build_vencord,
             apply_to_vesktop,
-            run_patched_vesktop
+            run_patched_vesktop,
+            is_vesktop_running
         ])
         .run(tauri::generate_context!())
         .expect("error while running veskforge");
@@ -1623,9 +1749,31 @@ mod tests {
         let wrapper = fs::read_to_string(dir.join("index.js")).unwrap();
         assert!(wrapper.contains("definePlugin"));
         assert!(wrapper.contains("Discord GFM Tables"));
+        assert!(wrapper.contains("id: 0n"));
         assert!(wrapper.contains("MarkdownTableRenderer"));
 
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn betterdiscord_wrapper_uses_declared_metadata() {
+        let source = r#"
+/**
+ * @name DiscordGfmTables
+ * @author Microck
+ * @description Renders GitHub-Flavored Markdown pipe tables in Discord messages.
+ */
+module.exports = class MarkdownTableRenderer {};
+"#;
+
+        let wrapper = betterdiscord_compat_wrapper(source, "discord-gfm-tables");
+
+        assert!(wrapper.contains(r#"name: "DiscordGfmTables""#));
+        assert!(wrapper.contains(
+            r#"description: "Renders GitHub-Flavored Markdown pipe tables in Discord messages.""#
+        ));
+        assert!(wrapper.contains(r#"authors: [{ name: "Microck", id: 0n }]"#));
+        assert!(!wrapper.contains(r#"name: "discord-gfm-tables""#));
     }
 
     #[test]
