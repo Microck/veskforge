@@ -671,10 +671,16 @@ function App() {
               <div className="apply-footer">
                 <button
                   className="secondary build-before-apply"
-                  disabled={!canBuild}
-                  onClick={() => runAction("Building Vencord", () => invoke("build_vencord"))}
-                  title="Build the patched Vencord output"
-                  aria-label="Build patched output"
+                  disabled={!!busy}
+                  onClick={() =>
+                    runAction("Launching patched Vesktop", () =>
+                      invoke("run_patched_vesktop", {
+                        request: { statePath: vesktopStatePath.trim() || undefined },
+                      }),
+                    )
+                  }
+                  title="Launch Vesktop with the patched build"
+                  aria-label="Launch patched Vesktop"
                 >
                   <Play size={23} weight="regular" />
                 </button>

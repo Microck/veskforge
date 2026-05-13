@@ -7,7 +7,7 @@ use std::{
     ffi::{OsStr, OsString},
     fs, io,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
     time::{SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Manager};
@@ -670,6 +670,23 @@ fn run_command(program: &str, args: &[&str], cwd: Option<&Path>) -> Result<Strin
     }
 }
 
+fn spawn_detached(program: &Path, args: &[&str]) -> Result<(), String> {
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    hide_subprocess_window(&mut command);
+    if let Some(path) = command_path_env() {
+        command.env("PATH", path);
+    }
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|err| format!("Failed to launch {}: {err}", program.display()))
+}
+
 fn tool_status(name: &str, version_args: &[&str]) -> ToolStatus {
     match run_command(name, version_args, None) {
         Ok(output) => ToolStatus {
@@ -831,6 +848,78 @@ fn find_existing_vesktop_state() -> Option<PathBuf> {
     vesktop_state_candidates()
         .into_iter()
         .find(|path| path.exists())
+}
+
+#[cfg(target_os = "windows")]
+fn vesktop_executable_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Ok(local_appdata) = env::var("LOCALAPPDATA") {
+        let local_appdata = PathBuf::from(local_appdata);
+        for install_dir in [
+            local_appdata.join("Programs").join("vesktop"),
+            local_appdata.join("Programs").join("Vesktop"),
+            local_appdata.join("vesktop"),
+            local_appdata.join("Vesktop"),
+        ] {
+            candidates.push(install_dir.join("vesktop.exe"));
+            candidates.push(install_dir.join("Vesktop.exe"));
+        }
+    }
+
+    if let Ok(program_files) = env::var("ProgramFiles") {
+        for install_dir in [
+            PathBuf::from(&program_files).join("Vesktop"),
+            PathBuf::from(program_files).join("vesktop"),
+        ] {
+            candidates.push(install_dir.join("vesktop.exe"));
+            candidates.push(install_dir.join("Vesktop.exe"));
+        }
+    }
+
+    candidates.extend(
+        ["vesktop", "Vesktop"]
+            .into_iter()
+            .filter_map(resolve_program),
+    );
+    candidates
+}
+
+#[cfg(target_os = "linux")]
+fn vesktop_executable_candidates() -> Vec<PathBuf> {
+    ["vesktop", "Vesktop"]
+        .into_iter()
+        .filter_map(resolve_program)
+        .collect()
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+fn vesktop_executable_candidates() -> Vec<PathBuf> {
+    Vec::new()
+}
+
+fn launch_vesktop(state_path: &Path) -> Result<String, String> {
+    for candidate in vesktop_executable_candidates() {
+        if candidate.is_file() {
+            spawn_detached(&candidate, &[])?;
+            return Ok(format!("Launched {}", candidate.display()));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let flatpak_state = state_path
+            .components()
+            .any(|component| component.as_os_str() == "dev.vencord.Vesktop");
+        if flatpak_state {
+            if let Some(flatpak) = resolve_program("flatpak") {
+                spawn_detached(&flatpak, &["run", "dev.vencord.Vesktop"])?;
+                return Ok("Launched Flatpak app dev.vencord.Vesktop".to_string());
+            }
+        }
+    }
+
+    Err("Could not find a Vesktop executable to launch. Apply succeeded, but start Vesktop manually.".to_string())
 }
 
 #[cfg(target_os = "windows")]
@@ -1333,6 +1422,30 @@ fn apply_to_vesktop(app: AppHandle, request: ApplyRequest) -> Result<CommandResu
     })
 }
 
+#[tauri::command]
+fn run_patched_vesktop(app: AppHandle, request: ApplyRequest) -> Result<CommandResult, String> {
+    let state_path = request
+        .state_path
+        .as_ref()
+        .filter(|path| !path.trim().is_empty())
+        .map(PathBuf::from)
+        .or_else(find_existing_vesktop_state)
+        .ok_or_else(|| "Could not locate Vesktop state.json. Set VESKTOP_STATE_FILE or paste the path in the UI.".to_string())?;
+    let apply_result = apply_to_vesktop(
+        app,
+        ApplyRequest {
+            state_path: Some(state_path.display().to_string()),
+        },
+    )?;
+    let launch_log = launch_vesktop(&state_path)?;
+
+    Ok(CommandResult {
+        ok: true,
+        message: "Patched Vesktop build was applied and Vesktop was launched.".to_string(),
+        log: format!("{}\n{launch_log}", apply_result.log),
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1348,7 +1461,8 @@ pub fn run() {
             check_updates,
             run_startup_check,
             build_vencord,
-            apply_to_vesktop
+            apply_to_vesktop,
+            run_patched_vesktop
         ])
         .run(tauri::generate_context!())
         .expect("error while running veskforge");
