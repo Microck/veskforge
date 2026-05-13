@@ -365,7 +365,7 @@ button:disabled {
 .source-table,
 .target-card,
 .install-card,
-.rebuild-card,
+.settings-card,
 .review-card,
 .data-card,
 .activity-log,
@@ -508,6 +508,51 @@ button:disabled {
   padding: 14px;
 }
 
+.source-feedback {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  margin-top: 14px;
+  padding: 13px 15px;
+  color: #c4ccd8;
+  background: rgba(15, 18, 24, 0.64);
+}
+
+.source-feedback svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.source-feedback p {
+  min-width: 0;
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.source-feedback.info svg {
+  color: var(--blue);
+}
+
+.source-feedback.success {
+  border-color: rgba(79, 209, 132, 0.24);
+}
+
+.source-feedback.success svg {
+  color: var(--green);
+}
+
+.source-feedback.error {
+  border-color: rgba(255, 109, 125, 0.28);
+}
+
+.source-feedback.error svg {
+  color: var(--danger);
+}
+
 .source-form {
   display: grid;
   grid-template-columns: 126px minmax(0, 1.4fr) minmax(0, 0.9fr) auto;
@@ -625,7 +670,7 @@ button:disabled {
 
 .data-section h3,
 .install-card h3,
-.rebuild-card h3,
+.setting-toggle h3,
 .review-card h3 {
   margin: 0;
   color: #f5f7fb;
@@ -760,8 +805,7 @@ button:disabled {
   gap: 18px;
 }
 
-.install-card,
-.rebuild-card {
+.install-card {
   display: flex;
   align-items: center;
   min-height: 76px;
@@ -774,7 +818,7 @@ button:disabled {
 }
 
 .install-card p,
-.rebuild-card p {
+.setting-toggle p {
   margin: 7px 0 0;
   color: #b3bbc8;
   font-size: 14px;
@@ -815,8 +859,24 @@ button:disabled {
   font-weight: 500;
 }
 
-.rebuild-card {
+.settings-card {
+  display: grid;
+  margin-bottom: 14px;
+  overflow: hidden;
+}
+
+.setting-toggle {
+  display: flex;
+  min-height: 62px;
+  align-items: center;
   justify-content: space-between;
+  gap: 20px;
+  border-bottom: 1px solid var(--line);
+  padding: 0 24px;
+}
+
+.setting-toggle:last-child {
+  border-bottom: 0;
 }
 
 .review-card {

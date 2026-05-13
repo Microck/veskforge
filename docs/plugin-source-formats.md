@@ -6,17 +6,19 @@ veskforge targets Vencord userplugins for Vesktop. It does not install arbitrary
 
 | Source | Accepted shape | Notes |
 | --- | --- | --- |
-| Single file | `.ts`, `.tsx`, `.js`, `.jsx` | Must be a Vencord module with a default export. |
-| Folder | `index.ts`, `index.tsx`, `index.js`, or `index.jsx` | Supporting files such as components, utilities, CSS, and native modules may live beside the entrypoint. |
+| Single file | `.ts`, `.tsx`, `.js`, `.jsx` | Must be a Vencord module with a default export, or a simple BetterDiscord-style `module.exports` plugin without `BdApi` usage. |
+| Folder | `index.ts`, `index.tsx`, `index.js`, `index.jsx`, or exactly one `.plugin.js` | Supporting files such as components, utilities, CSS, and native modules may live beside the entrypoint. |
 | GitHub repo | `https://github.com/owner/repo` | veskforge clones the repo and auto-detects one plugin folder. |
 
-GitHub repos are accepted only when veskforge can find exactly one Vencord plugin entrypoint at the repository root or in a subfolder. If none or multiple are found, the source is rejected so the build does not fail later with a vague module-resolution error.
+GitHub repos are accepted only when veskforge can find exactly one supported plugin entrypoint at the repository root or in a subfolder. If none or multiple are found, the source is rejected so the build does not fail later with a vague module-resolution error.
+
+BetterDiscord-style `.plugin.js` support is narrow. veskforge wraps simple `module.exports` lifecycle classes as Vencord plugins at build time, but rejects plugins that reference `BdApi` because those APIs are not present inside Vesktop's Vencord runtime.
 
 ## Rejected
 
 | Source | Why |
 | --- | --- |
-| BetterDiscord `.plugin.js` | BetterDiscord plugins use a different CommonJS/class plugin API and are not Vencord `definePlugin` modules. |
+| BetterDiscord `.plugin.js` with `BdApi` usage | BetterDiscord APIs are not available inside Vencord. |
 | GitHub `blob` / `tree` URLs | These are web UI URLs, not repository roots. |
 | `raw.githubusercontent.com` URLs | Raw files are not Git repositories. Use a local file source for a downloaded file. |
 | SSH Git URLs | veskforge intentionally uses HTTPS GitHub repo URLs for predictable validation and cloning. |

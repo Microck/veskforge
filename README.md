@@ -31,7 +31,8 @@ Vencord custom plugins are compile-time plugins. Vesktop loads a built Vencord d
 - stores plugin state in one manifest and recreates `src/userplugins` from that manifest before each build
 - validates required Vencord desktop artifacts before touching Vesktop state
 - preserves unrelated Vesktop `state.json` fields when applying `vencordDir`
-- defaults updates to manual apply, with an explicit auto-rebuild preference stored for later automation
+- can start with the OS session and check the managed Vencord checkout for updates
+- defaults updates to manual apply, with explicit opt-in for startup rebuild/apply automation
 
 ## requirements
 
@@ -83,6 +84,7 @@ src-tauri/target/release/bundle/deb/
 | build | clone or update `Vendicated/Vencord`, recreate `src/userplugins`, run `pnpm install --frozen-lockfile`, then `pnpm build` |
 | validate | require `package.json`, `vencordDesktopMain.js`, `vencordDesktopPreload.js`, `vencordDesktopRenderer.js`, `vencordDesktopRenderer.css` |
 | apply | write the validated `dist` path to Vesktop `state.json` as `vencordDir` |
+| startup check | optionally launch at login, check the managed Vencord checkout, and rebuild/apply only when Auto rebuild is enabled |
 | restart | fully restart Vesktop so it loads the custom Vencord build |
 
 ## architecture
@@ -101,6 +103,8 @@ flowchart LR
     dist["Validated desktop dist"]
   end
 
+  startup["OS startup entry"]
+
   subgraph plugin_sources["Plugin sources"]
     local_file["Local plugin file"]
     local_folder["Local plugin folder"]
@@ -113,6 +117,8 @@ flowchart LR
   end
 
   backend -->|stores enabled sources| manifest
+  backend -->|registers login launch| startup
+  startup -->|opens veskforge| ui
   backend -->|normalizes and validates| plugin_sources
   plugin_sources -->|materializes enabled plugins| userplugins
   backend -->|clones or updates| workspace
@@ -131,15 +137,15 @@ flowchart LR
   class app_state,plugin_sources,vesktop_state boundary
   class manifest,state_json storage
   class workspace,userplugins,dist build
-  class local_file,local_folder,github_repo,vesktop external
+  class startup,local_file,local_folder,github_repo,vesktop external
 ```
 
 ## plugin sources
 
 | source | expected shape |
 | --- | --- |
-| local file | `.ts`, `.tsx`, `.js`, or `.jsx` Vencord module with a default export |
-| local folder | folder containing `index.ts`, `index.tsx`, `index.js`, or `index.jsx`; veskforge can auto-detect one nested plugin folder |
+| local file | `.ts`, `.tsx`, `.js`, or `.jsx` Vencord module with a default export; simple `.plugin.js` files without `BdApi` usage can be wrapped at build time |
+| local folder | folder containing `index.ts`, `index.tsx`, `index.js`, `index.jsx`, or exactly one `.plugin.js`; veskforge can auto-detect one nested plugin folder |
 | GitHub repo | `https://github.com/owner/repo`, with optional branch, tag, or commit ref; veskforge clones and auto-detects one plugin folder |
 
 veskforge recreates the managed Vencord `src/userplugins` folder from the manifest on each build. disabled plugins stay in the manifest but are not materialized into the next build. see [plugin source formats](docs/plugin-source-formats.md) for supported and rejected source shapes.
@@ -164,7 +170,9 @@ you can also paste a `state.json` path in the app, or set `VESKTOP_STATE_FILE` b
 
 ## update model
 
-veskforge defaults to manual updates. the app can check whether the managed Vencord checkout differs from `origin/main`; rebuilding is an explicit action unless auto rebuild is enabled in settings.
+veskforge defaults to manual updates. the app can check whether the managed Vencord checkout differs from `origin/main`; rebuilding is an explicit action unless Auto rebuild is enabled in settings.
+
+Start at login registers veskforge with the OS session startup mechanism. On launch, veskforge checks the managed Vencord checkout. If Auto rebuild is off, it only reports the update. If Auto rebuild is on, it rebuilds the custom Vencord bundle and reapplies the validated `dist` to the detected Vesktop `state.json`.
 
 this is intentional. Vencord and Discord internals can change, and a plugin that built yesterday may fail after an upstream update.
 

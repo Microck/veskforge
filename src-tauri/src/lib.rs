@@ -21,6 +21,7 @@ const REQUIRED_DIST_FILES: [&str; 5] = [
 ];
 const PLUGIN_ENTRYPOINT_FILES: [&str; 4] = ["index.ts", "index.tsx", "index.js", "index.jsx"];
 const PLUGIN_FILE_EXTENSIONS: [&str; 4] = ["ts", "tsx", "js", "jsx"];
+const BETTERDISCORD_PLUGIN_SUFFIX: &str = ".plugin.js";
 const IGNORED_PLUGIN_DISCOVERY_DIRS: [&str; 8] = [
     ".git",
     "node_modules",
@@ -67,8 +68,16 @@ struct UpdatePolicy {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct StartupSettings {
+    launch_on_login: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Manifest {
     update_policy: UpdatePolicy,
+    #[serde(default = "default_startup_settings")]
+    startup: StartupSettings,
     plugins: Vec<PluginRecord>,
     last_successful_build: Option<BuildMetadata>,
 }
@@ -125,8 +134,31 @@ struct SetUpdatePolicyRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct SetStartupRequest {
+    launch_on_login: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ApplyRequest {
     state_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EntrypointKind {
+    Vencord,
+    BetterDiscordCompat,
+}
+
+struct PluginEntrypoint {
+    path: PathBuf,
+    kind: EntrypointKind,
+}
+
+fn default_startup_settings() -> StartupSettings {
+    StartupSettings {
+        launch_on_login: false,
+    }
 }
 
 fn default_manifest() -> Manifest {
@@ -134,6 +166,7 @@ fn default_manifest() -> Manifest {
         update_policy: UpdatePolicy {
             mode: "manual".to_string(),
         },
+        startup: default_startup_settings(),
         plugins: Vec::new(),
         last_successful_build: None,
     }
@@ -298,31 +331,99 @@ fn plugin_entrypoint_path(path: &Path) -> Option<PathBuf> {
         .find(|entrypoint| entrypoint.is_file())
 }
 
-fn has_plugin_entrypoint(path: &Path) -> bool {
-    plugin_entrypoint_path(path).is_some()
+fn betterdiscord_entrypoint_path(path: &Path) -> Result<Option<PathBuf>, String> {
+    let entries =
+        fs::read_dir(path).map_err(|err| format!("Could not inspect {}: {err}", path.display()))?;
+    let candidates = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|entry| {
+            entry.is_file()
+                && entry
+                    .file_name()
+                    .and_then(OsStr::to_str)
+                    .is_some_and(|name| name.ends_with(BETTERDISCORD_PLUGIN_SUFFIX))
+        })
+        .collect::<Vec<_>>();
+
+    match candidates.len() {
+        0 => Ok(None),
+        1 => Ok(candidates.into_iter().next()),
+        _ => {
+            let shown = candidates
+                .iter()
+                .take(8)
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join("\n");
+            Err(format!(
+                "Could not auto-detect one BetterDiscord-style plugin because multiple .plugin.js files were found:\n{shown}"
+            ))
+        }
+    }
 }
 
-fn validate_plugin_entrypoint_content(path: &Path) -> Result<(), String> {
+fn is_betterdiscord_plugin_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(OsStr::to_str)
+        .is_some_and(|name| name.ends_with(BETTERDISCORD_PLUGIN_SUFFIX))
+}
+
+fn plugin_entrypoint(path: &Path) -> Result<Option<PluginEntrypoint>, String> {
+    if let Some(entrypoint) = plugin_entrypoint_path(path) {
+        validate_plugin_entrypoint_content(&entrypoint).map(|kind| {
+            Some(PluginEntrypoint {
+                path: entrypoint,
+                kind,
+            })
+        })
+    } else if let Some(entrypoint) = betterdiscord_entrypoint_path(path)? {
+        validate_plugin_entrypoint_content(&entrypoint).map(|kind| {
+            Some(PluginEntrypoint {
+                path: entrypoint,
+                kind,
+            })
+        })
+    } else {
+        Ok(None)
+    }
+}
+
+fn has_plugin_entrypoint(path: &Path) -> bool {
+    plugin_entrypoint(path).is_ok_and(|entrypoint| entrypoint.is_some())
+}
+
+fn validate_plugin_entrypoint_content(path: &Path) -> Result<EntrypointKind, String> {
     let content = fs::read_to_string(path)
         .map_err(|err| format!("Could not read plugin entrypoint {}: {err}", path.display()))?;
     if content.contains("export default") {
-        return Ok(());
+        return Ok(EntrypointKind::Vencord);
+    }
+
+    if is_betterdiscord_plugin_path(path) && content.contains("module.exports") {
+        if content.contains("BdApi") {
+            return Err(format!(
+                "Plugin entrypoint {} uses BdApi, which cannot run inside Vencord. Use a Vencord userplugin or port the plugin first.",
+                path.display()
+            ));
+        }
+
+        return Ok(EntrypointKind::BetterDiscordCompat);
     }
 
     Err(format!(
-        "Plugin entrypoint {} must be a Vencord plugin module with a default export. BetterDiscord .plugin.js files are not compatible.",
+        "Plugin entrypoint {} must be a Vencord plugin module with a default export, or a simple BetterDiscord-style module.exports plugin without BdApi usage.",
         path.display()
     ))
 }
 
 fn validate_plugin_entrypoint(path: &Path, plugin_name: &str) -> Result<(), String> {
-    if let Some(entrypoint) = plugin_entrypoint_path(path) {
-        validate_plugin_entrypoint_content(&entrypoint)?;
+    if plugin_entrypoint(path)?.is_some() {
         return Ok(());
     }
 
     Err(format!(
-        "Plugin source \"{plugin_name}\" is not a Vencord userplugin folder. Expected one of {}.",
+        "Plugin source \"{plugin_name}\" is not a supported plugin folder. Expected one of {}, or exactly one .plugin.js file without BdApi usage.",
         PLUGIN_ENTRYPOINT_FILES.join(", ")
     ))
 }
@@ -397,6 +498,40 @@ fn copy_dir_all(from: &Path, to: &Path) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+fn js_string_literal(value: &str) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "\"Imported plugin\"".to_string())
+}
+
+fn betterdiscord_compat_wrapper(source: &str, plugin_name: &str) -> String {
+    format!(
+        "import definePlugin from \"@utils/types\";\n\nconst module = {{ exports: {{}} }};\nconst exports = module.exports;\n\n{source}\n\nconst PluginClass = module.exports && module.exports.default ? module.exports.default : module.exports;\nlet instance;\n\nexport default definePlugin({{\n  name: {name},\n  description: \"Imported from a BetterDiscord-style .plugin.js source by veskforge.\",\n  authors: [{{ name: \"veskforge\" }}],\n  start() {{\n    if (typeof PluginClass === \"function\") {{\n      instance = new PluginClass();\n      instance.start?.();\n      return;\n    }}\n\n    PluginClass?.start?.();\n  }},\n  stop() {{\n    instance?.stop?.();\n    PluginClass?.stop?.();\n    instance = undefined;\n  }},\n}});\n",
+        name = js_string_literal(plugin_name),
+    )
+}
+
+fn ensure_vencord_entrypoint(path: &Path, plugin_name: &str) -> Result<(), String> {
+    let entrypoint = plugin_entrypoint(path)?.ok_or_else(|| {
+        format!(
+            "Plugin source \"{plugin_name}\" is not a supported plugin folder. Expected one of {}, or exactly one .plugin.js file without BdApi usage.",
+            PLUGIN_ENTRYPOINT_FILES.join(", ")
+        )
+    })?;
+
+    if entrypoint.kind == EntrypointKind::Vencord {
+        return Ok(());
+    }
+
+    let source = fs::read_to_string(&entrypoint.path).map_err(|err| {
+        format!(
+            "Could not read BetterDiscord-style plugin {}: {err}",
+            entrypoint.path.display()
+        )
+    })?;
+    let wrapper = betterdiscord_compat_wrapper(&source, plugin_name);
+    fs::write(path.join("index.js"), wrapper)
+        .map_err(|err| format!("Could not write compatibility wrapper: {err}"))
 }
 
 fn reset_dir(path: &Path) -> Result<(), String> {
@@ -673,6 +808,95 @@ fn find_existing_vesktop_state() -> Option<PathBuf> {
         .find(|path| path.exists())
 }
 
+#[cfg(target_os = "windows")]
+fn startup_command() -> Result<String, String> {
+    let exe = env::current_exe()
+        .map_err(|err| format!("Could not resolve veskforge executable: {err}"))?;
+    Ok(format!("\"{}\" --startup", exe.display()))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_autostart_path() -> Result<PathBuf, String> {
+    if let Ok(config_home) = env::var("XDG_CONFIG_HOME") {
+        return Ok(PathBuf::from(config_home)
+            .join("autostart")
+            .join("veskforge.desktop"));
+    }
+
+    let home = env::var("HOME")
+        .map_err(|_| "Could not enable startup because HOME is not set.".to_string())?;
+    Ok(PathBuf::from(home)
+        .join(".config")
+        .join("autostart")
+        .join("veskforge.desktop"))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_startup_command() -> Result<String, String> {
+    if let Ok(appimage) = env::var("APPIMAGE") {
+        let path = PathBuf::from(appimage);
+        if path.is_file() {
+            return Ok(format!("\"{}\" --startup", path.display()));
+        }
+    }
+
+    let exe = env::current_exe()
+        .map_err(|err| format!("Could not resolve veskforge executable: {err}"))?;
+    Ok(format!("\"{}\" --startup", exe.display()))
+}
+
+#[cfg(target_os = "linux")]
+fn set_os_startup_enabled(enabled: bool) -> Result<(), String> {
+    let path = linux_autostart_path()?;
+    if enabled {
+        let parent = path
+            .parent()
+            .ok_or("Could not resolve Linux autostart directory.")?;
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("Could not create {}: {err}", parent.display()))?;
+        let content = format!(
+            "[Desktop Entry]\nType=Application\nName=Veskforge\nExec={}\nTerminal=false\nX-GNOME-Autostart-enabled=true\n",
+            linux_startup_command()?
+        );
+        fs::write(&path, content)
+            .map_err(|err| format!("Could not write {}: {err}", path.display()))?;
+    } else if path.exists() {
+        fs::remove_file(&path)
+            .map_err(|err| format!("Could not remove {}: {err}", path.display()))?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn set_os_startup_enabled(enabled: bool) -> Result<(), String> {
+    let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+    if enabled {
+        run_command(
+            "reg",
+            &[
+                "add",
+                key,
+                "/v",
+                "Veskforge",
+                "/t",
+                "REG_SZ",
+                "/d",
+                &startup_command()?,
+                "/f",
+            ],
+            None,
+        )?;
+    } else {
+        let _ = run_command("reg", &["delete", key, "/v", "Veskforge", "/f"], None);
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+fn set_os_startup_enabled(_enabled: bool) -> Result<(), String> {
+    Err("Startup launch is currently supported on Windows and Linux.".to_string())
+}
+
 fn materialize_plugins(
     app: &AppHandle,
     manifest: &mut Manifest,
@@ -686,16 +910,27 @@ fn materialize_plugins(
         match &plugin.source {
             PluginSource::LocalFile { path } => {
                 let source_path = Path::new(path);
-                validate_local_plugin_path(source_path)?;
+                let kind = validate_plugin_entrypoint_content(source_path)?;
                 fs::create_dir_all(&target).map_err(|err| {
                     format!("Could not create plugin dir {}: {err}", target.display())
                 })?;
-                let extension = source_path
-                    .extension()
-                    .and_then(OsStr::to_str)
-                    .unwrap_or("ts");
-                fs::copy(path, target.join(format!("index.{extension}")))
-                    .map_err(|err| format!("Could not copy plugin file {path}: {err}"))?;
+                if kind == EntrypointKind::BetterDiscordCompat {
+                    let source = fs::read_to_string(source_path).map_err(|err| {
+                        format!("Could not read BetterDiscord-style plugin {path}: {err}")
+                    })?;
+                    fs::write(
+                        target.join("index.js"),
+                        betterdiscord_compat_wrapper(&source, &plugin.name),
+                    )
+                    .map_err(|err| format!("Could not write compatibility wrapper: {err}"))?;
+                } else {
+                    let extension = source_path
+                        .extension()
+                        .and_then(OsStr::to_str)
+                        .unwrap_or("ts");
+                    fs::copy(path, target.join(format!("index.{extension}")))
+                        .map_err(|err| format!("Could not copy plugin file {path}: {err}"))?;
+                }
                 validate_plugin_entrypoint(&target, &plugin.name)?;
                 plugin.installed_path = target.display().to_string();
             }
@@ -704,7 +939,7 @@ fn materialize_plugins(
                 let source_dir = resolve_plugin_source_dir(Path::new(path), &plugin.name)?;
                 copy_dir_all(&source_dir, &target)
                     .map_err(|err| format!("Could not copy plugin folder {path}: {err}"))?;
-                validate_plugin_entrypoint(&target, &plugin.name)?;
+                ensure_vencord_entrypoint(&target, &plugin.name)?;
                 plugin.installed_path = target.display().to_string();
             }
             PluginSource::Git { url, reference } => {
@@ -737,7 +972,7 @@ fn materialize_plugins(
                 let source_dir = resolve_plugin_source_dir(&store, &plugin.name)?;
                 copy_dir_all(&source_dir, &target)
                     .map_err(|err| format!("Could not copy git plugin {normalized_url}: {err}"))?;
-                validate_plugin_entrypoint(&target, &plugin.name)?;
+                ensure_vencord_entrypoint(&target, &plugin.name)?;
                 plugin.installed_path = target.display().to_string();
                 plugin.last_revision = git_revision(&store);
             }
@@ -905,6 +1140,15 @@ fn set_update_policy(app: AppHandle, request: SetUpdatePolicyRequest) -> Result<
 }
 
 #[tauri::command]
+fn set_startup_settings(app: AppHandle, request: SetStartupRequest) -> Result<Manifest, String> {
+    set_os_startup_enabled(request.launch_on_login)?;
+    let mut manifest = read_manifest(&app)?;
+    manifest.startup.launch_on_login = request.launch_on_login;
+    write_manifest(&app, &manifest)?;
+    Ok(manifest)
+}
+
+#[tauri::command]
 fn check_updates(app: AppHandle) -> Result<CommandResult, String> {
     let vencord = vencord_dir(&app)?;
     if !vencord.exists() {
@@ -931,6 +1175,35 @@ fn check_updates(app: AppHandle) -> Result<CommandResult, String> {
             format!("Update available: {} -> {}", local.trim(), remote.trim())
         },
         log,
+    })
+}
+
+#[tauri::command]
+fn run_startup_check(app: AppHandle) -> Result<CommandResult, String> {
+    let manifest = read_manifest(&app)?;
+    if !manifest.startup.launch_on_login {
+        return Ok(CommandResult {
+            ok: true,
+            message: "Startup checks are disabled.".to_string(),
+            log: "Enable Start at login to check for managed Vencord updates when veskforge opens."
+                .to_string(),
+        });
+    }
+
+    let update_result = check_updates(app.clone())?;
+    if update_result.ok || manifest.update_policy.mode != "auto" {
+        return Ok(update_result);
+    }
+
+    let build_result = build_vencord(app.clone())?;
+    let apply_result = apply_to_vesktop(app, ApplyRequest { state_path: None })?;
+    Ok(CommandResult {
+        ok: true,
+        message: "Startup update was rebuilt and applied to Vesktop.".to_string(),
+        log: format!(
+            "{}\n\n{}\n\n{}",
+            update_result.log, build_result.log, apply_result.log
+        ),
     })
 }
 
@@ -1043,8 +1316,10 @@ pub fn run() {
             remove_plugin,
             set_plugin_enabled,
             set_update_policy,
+            set_startup_settings,
             install_toolchain,
             check_updates,
+            run_startup_check,
             build_vencord,
             apply_to_vesktop
         ])
@@ -1091,12 +1366,28 @@ mod tests {
     }
 
     #[test]
-    fn local_plugin_file_rejects_commonjs_plugin_files() {
+    fn local_plugin_file_accepts_simple_betterdiscord_plugin_files() {
         let dir = env::temp_dir().join(format!("veskforge-commonjs-test-{}", now_stamp()));
         fs::create_dir_all(&dir).unwrap();
 
         let betterdiscord = dir.join("plugin.plugin.js");
         fs::write(&betterdiscord, "module.exports = class Plugin {};").unwrap();
+        assert!(validate_local_plugin_path(&betterdiscord).is_ok());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn local_plugin_file_rejects_betterdiscord_plugins_with_bdapi_usage() {
+        let dir = env::temp_dir().join(format!("veskforge-bdapi-test-{}", now_stamp()));
+        fs::create_dir_all(&dir).unwrap();
+
+        let betterdiscord = dir.join("plugin.plugin.js");
+        fs::write(
+            &betterdiscord,
+            "module.exports = class Plugin { start() { BdApi.showToast('hi'); } };",
+        )
+        .unwrap();
         assert!(validate_local_plugin_path(&betterdiscord).is_err());
 
         fs::remove_dir_all(dir).unwrap();
@@ -1147,6 +1438,43 @@ mod tests {
 
         fs::write(dir.join("index.js"), "export default {};").unwrap();
         assert!(validate_plugin_entrypoint(&dir, "Missing Entrypoint").is_ok());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn materialized_betterdiscord_plugin_gets_vencord_wrapper() {
+        let dir = env::temp_dir().join(format!("veskforge-bd-wrapper-test-{}", now_stamp()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("discord-gfm-tables.plugin.js"),
+            "module.exports = class MarkdownTableRenderer { start() {} stop() {} };",
+        )
+        .unwrap();
+
+        ensure_vencord_entrypoint(&dir, "Discord GFM Tables").unwrap();
+        let wrapper = fs::read_to_string(dir.join("index.js")).unwrap();
+        assert!(wrapper.contains("definePlugin"));
+        assert!(wrapper.contains("Discord GFM Tables"));
+        assert!(wrapper.contains("MarkdownTableRenderer"));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn plugin_source_dir_auto_detects_root_betterdiscord_plugin() {
+        let dir = env::temp_dir().join(format!("veskforge-bd-detect-test-{}", now_stamp()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("discord-gfm-tables.plugin.js"),
+            "module.exports = class MarkdownTableRenderer {};",
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolve_plugin_source_dir(&dir, "Discord GFM Tables").unwrap(),
+            dir
+        );
 
         fs::remove_dir_all(dir).unwrap();
     }

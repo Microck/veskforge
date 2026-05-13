@@ -8,7 +8,7 @@ veskforge is intentionally narrow: it manages Vencord userplugins for Vesktop. T
 | --- | --- | --- | --- |
 | Vencord / Vesktop custom userplugins | single `.ts` / `.tsx` source file, or folder with `index.ts` / `index.tsx`; practical source modules can also be `.js` / `.jsx` when they use ESM and Vencord APIs | compiled into Vencord through `src/userplugins` and bundled by Vencord's build | supported |
 | Equicord-style userplugins | folder with `index.ts` / `index.tsx`, often targeting Vencord-compatible APIs plus Equicord-only APIs | Equicord/Vencord fork build system | rejected unless the plugin is also valid against upstream Vencord |
-| BetterDiscord | single `*.plugin.js` file with JSDoc metadata and `module.exports` class/function | loaded at runtime by BetterDiscord with `BdApi` | rejected |
+| BetterDiscord | single `*.plugin.js` file with JSDoc metadata and `module.exports` class/function | loaded at runtime by BetterDiscord with `BdApi` | limited compatibility for plugins that do not use `BdApi` |
 | Replugged | folder/package with `manifest.json` plus built JS entrypoint; plugins may be distributed as packages/archives | Replugged loader and plugin APIs | rejected |
 | Powercord | folder with JS entrypoint and `manifest.json` / `powercord_manifest.json`; project is effectively legacy/EOL | Powercord loader and APIs | rejected |
 | shelter | plugin package with `plugin.json` and JS/TS/Solid source built for shelter | shelter loader and APIs | rejected |
@@ -20,21 +20,21 @@ veskforge is intentionally narrow: it manages Vencord userplugins for Vesktop. T
 
 ## Compatibility Rule
 
-veskforge accepts only Vencord-compatible source modules because Vesktop loads a Vencord desktop bundle through the `vencordDir` setting. It does not run BetterDiscord, Replugged, Powercord, shelter, GooseMod, Vendetta-family, Enmity, Aliucord, or theme loaders.
+veskforge accepts Vencord-compatible source modules because Vesktop loads a Vencord desktop bundle through the `vencordDir` setting. It does not run BetterDiscord, Replugged, Powercord, shelter, GooseMod, Vendetta-family, Enmity, Aliucord, or theme loaders.
 
-Accepted sources must resolve to exactly one Vencord plugin entrypoint:
+Accepted sources must resolve to exactly one supported plugin entrypoint:
 
 - local file: `.ts`, `.tsx`, `.js`, or `.jsx`
-- local folder: `index.ts`, `index.tsx`, `index.js`, or `index.jsx`
+- local folder: `index.ts`, `index.tsx`, `index.js`, `index.jsx`, or exactly one `.plugin.js`
 - GitHub repository root: `https://github.com/owner/repo`
 
-The entrypoint must contain a default export. This conservative check rejects CommonJS BetterDiscord plugins such as `module.exports = class Plugin {}` before they can produce a vague Vencord build error.
+Vencord entrypoints must contain a default export. Simple BetterDiscord-style `module.exports` lifecycle classes are wrapped as Vencord plugins during materialization when they do not reference `BdApi`. Plugins that depend on `BdApi` are rejected immediately because that API is not present in Vesktop's Vencord runtime.
 
 ## GitHub Source Handling
 
 GitHub inputs are repository roots only. veskforge rejects `blob`, `tree`, raw file, and SSH URLs because those inputs cannot be reliably cloned and inspected.
 
-When a GitHub repository is added, veskforge clones or fetches it immediately and searches for one Vencord plugin folder. The source is accepted only if discovery finds exactly one compatible entrypoint. No match and multiple matches are both hard errors with user-facing messages.
+When a GitHub repository is added, veskforge clones or fetches it immediately and searches for one compatible plugin folder. The source is accepted only if discovery finds exactly one compatible entrypoint. No match and multiple matches are both hard errors with user-facing messages.
 
 ## Sources Checked
 

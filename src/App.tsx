@@ -18,6 +18,7 @@ import {
   TerminalWindow,
   Trash,
   UploadSimple,
+  WarningCircle,
 } from "@phosphor-icons/react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -42,6 +43,7 @@ type PluginRecord = {
 
 type Manifest = {
   updatePolicy: { mode: "manual" | "auto" };
+  startup: { launchOnLogin: boolean };
   plugins: PluginRecord[];
   lastSuccessfulBuild?: {
     builtAt: string;
@@ -73,10 +75,15 @@ type CommandResult = {
   log: string;
 };
 
+type SourceFeedback = {
+  tone: "info" | "success" | "error";
+  message: string;
+};
+
 type View = "sources" | "build" | "vesktop";
 
 const sourceLabels: Record<PluginSource["kind"], string> = {
-  localFile: ".ts file",
+  localFile: "Plugin file",
   localFolder: "Local folder",
   git: "Git repository",
 };
@@ -141,6 +148,7 @@ function App() {
   const [vesktopStatePath, setVesktopStatePath] = useState("");
   const [search, setSearch] = useState("");
   const [showComposer, setShowComposer] = useState(false);
+  const [sourceFeedback, setSourceFeedback] = useState<SourceFeedback | null>(null);
 
   const manifest = status?.manifest;
   const plugins = manifest?.plugins ?? [];
@@ -189,7 +197,8 @@ function App() {
   async function addPlugin() {
     const trimmedSource = pluginPath.trim();
     if (!trimmedSource) {
-      setLog("Enter a local path or Git URL before adding a plugin.");
+      const message = "Enter a local path or Git URL before adding a plugin.";
+      setSourceFeedback({ tone: "error", message });
       return;
     }
 
@@ -200,18 +209,33 @@ function App() {
           ? { kind: "localFile", path: trimmedSource }
           : { kind: "localFolder", path: trimmedSource };
 
-    await runAction("Adding source", async () =>
-      invoke<Manifest>("add_plugin", {
+    setBusy("Adding source");
+    setSourceFeedback({ tone: "info", message: "Validating source..." });
+    try {
+      await invoke<Manifest>("add_plugin", {
         request: {
           source,
           name: pluginName.trim() || undefined,
         },
-      }),
-    );
-    setPluginName("");
-    setPluginPath("");
-    setGitRef("");
-    setShowComposer(false);
+      });
+      await refresh();
+      setSourceFeedback({
+        tone: "success",
+        message:
+          pluginKind === "git"
+            ? "Source added. Git repository shape was validated."
+            : "Source added. Plugin entrypoint was validated.",
+      });
+      setPluginName("");
+      setPluginPath("");
+      setGitRef("");
+      setShowComposer(false);
+    } catch (error) {
+      const message = errorMessage(error);
+      setSourceFeedback({ tone: "error", message });
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function autodetectVesktopState() {
@@ -235,7 +259,36 @@ function App() {
   }
 
   useEffect(() => {
-    refresh().catch((error) => setLog(errorMessage(error)));
+    let cancelled = false;
+
+    async function boot() {
+      try {
+        const nextStatus = await invoke<EnvironmentStatus>("get_environment_status");
+        if (cancelled) return;
+        setStatus(nextStatus);
+        setVesktopStatePath((current) => current || nextStatus.selectedVesktopState || "");
+
+        if (!nextStatus.manifest.startup.launchOnLogin) {
+          return;
+        }
+
+        setBusy("Startup check");
+        setLog("Checking managed Vencord updates...");
+        const result = await invoke<CommandResult>("run_startup_check");
+        if (cancelled) return;
+        await refresh();
+        setLog(`${result.message}\n\n${result.log}`.trim());
+      } catch (error) {
+        if (!cancelled) setLog(errorMessage(error));
+      } finally {
+        if (!cancelled) setBusy(null);
+      }
+    }
+
+    boot();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   return (
@@ -278,7 +331,14 @@ function App() {
                   <MagnifyingGlass size={24} />
                   <input value={search} onChange={(event) => setSearch(event.currentTarget.value)} placeholder="Search sources..." />
                 </label>
-                <button className="primary add-source" disabled={!!busy} onClick={() => setShowComposer((current) => !current)}>
+                <button
+                  className="primary add-source"
+                  disabled={!!busy}
+                  onClick={() => {
+                    setSourceFeedback(null);
+                    setShowComposer((current) => !current);
+                  }}
+                >
                   <Plus size={24} />
                   Add source
                 </button>
@@ -345,6 +405,8 @@ function App() {
                 setGitRef={setGitRef}
                 addPlugin={addPlugin}
               />
+
+              <SourceFeedbackPanel feedback={sourceFeedback} />
 
               <FooterNote icon={<ShieldCheck size={23} />}>Plugin sources are application code. Only add sources you trust.</FooterNote>
             </section>
@@ -449,12 +511,24 @@ function App() {
                 </div>
               </section>
 
-              <section className="rebuild-card">
-                <div>
-                  <h3>Auto rebuild</h3>
-                  <p>Automatically rebuild when sources change.</p>
-                </div>
-                <Switch
+              <section className="settings-card">
+                <SettingToggle
+                  title="Start at login"
+                  detail="Open veskforge with your session and check the managed build."
+                  checked={manifest?.startup.launchOnLogin ?? false}
+                  disabled={!!busy}
+                  label="Toggle start at login"
+                  onChange={(launchOnLogin) =>
+                    runAction("Saving startup setting", async () =>
+                      invoke<Manifest>("set_startup_settings", {
+                        request: { launchOnLogin },
+                      }),
+                    )
+                  }
+                />
+                <SettingToggle
+                  title="Auto rebuild"
+                  detail="Rebuild and reapply during startup checks when Vencord changes."
                   checked={manifest?.updatePolicy.mode === "auto"}
                   disabled={!!busy}
                   label="Toggle auto rebuild"
@@ -546,7 +620,7 @@ function AddSourcePanel({
             <span>Type</span>
             <select value={pluginKind} onChange={(event) => setPluginKind(event.currentTarget.value as PluginSource["kind"])}>
               <option value="localFolder">Local folder</option>
-              <option value="localFile">.ts file</option>
+              <option value="localFile">Plugin file</option>
               <option value="git">Git repository</option>
             </select>
           </label>
@@ -586,6 +660,18 @@ function AddSourcePanel({
   );
 }
 
+function SourceFeedbackPanel({ feedback }: { feedback: SourceFeedback | null }) {
+  if (!feedback) return null;
+
+  const Icon = feedback.tone === "success" ? Check : feedback.tone === "error" ? WarningCircle : Sparkle;
+  return (
+    <section className={`source-feedback ${feedback.tone}`}>
+      <Icon size={22} />
+      <p>{feedback.message}</p>
+    </section>
+  );
+}
+
 function Switch({
   checked,
   disabled,
@@ -602,6 +688,32 @@ function Switch({
       <input type="checkbox" checked={checked} disabled={disabled} onChange={(event) => onChange(event.currentTarget.checked)} />
       <span />
     </label>
+  );
+}
+
+function SettingToggle({
+  title,
+  detail,
+  checked,
+  disabled,
+  label,
+  onChange,
+}: {
+  title: string;
+  detail: string;
+  checked: boolean;
+  disabled?: boolean;
+  label: string;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <div className="setting-toggle">
+      <div>
+        <h3>{title}</h3>
+        <p>{detail}</p>
+      </div>
+      <Switch checked={checked} disabled={disabled} label={label} onChange={onChange} />
+    </div>
   );
 }
 
